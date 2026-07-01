@@ -4,8 +4,7 @@ Parámetros físicos de cada embalse.
 Fuentes:
   - Neusa : Manual de Operación Embalse del Neusa, CAR (versión vigente).
   - Sisga : Manual de Operación Embalse del Sisga, CAR (versión vigente).
-  - Tominé: valores aproximados de fuentes públicas; PENDIENTE de verificar
-             con el estudio batimétrico SURER 2022.
+  - Tominé: batimetría oficial 2021, GEB/Enel. Curva completa en data_contracts/curvas.py.
 """
 from dataclasses import dataclass
 
@@ -68,18 +67,18 @@ EMBALSES: dict[str, ParametrosEmbalse] = {
         descarga_max_m3s=15.0,      # sin dato documentado que lo contradiga
     ),
     # Fuente: batimetría oficial Tominé 2021, GEB/Enel (curva cota-volumen en data_contracts/curvas.py).
-    # cota_min_m y cota_max_m se derivan de la curva real a capacidad_min y capacidad_max:
-    #   cota a 30 Mm³  → interpolación en curva → ~2569.47 m
-    #   cota a 690 Mm³ → interpolación en curva → ~2598.09 m
+    # cota_min_m y cota_max_m son puntos ancla exactos de la curva batimétrica oficial:
+    #   9.90 Mm³  → 2566.63 m  (volumen muerto oficial; punto ancla de la tabla)
+    #   699.43 Mm³ → 2598.38 m (volumen total oficial / rebosadero; punto ancla de la tabla)
     # Estos valores se usan para la penalización por proximidad al mínimo; la conversión
     # cota↔volumen usa directamente la curva (no la interpolación lineal entre estos extremos).
     "Tomine": ParametrosEmbalse(
         nombre="Tomine",
-        capacidad_max_mm3=690.0,
-        capacidad_min_mm3=30.0,
+        capacidad_max_mm3=699.43,   # volumen total oficial, batimetría 2021
+        capacidad_min_mm3=9.90,     # volumen muerto oficial, batimetría 2021
         area_espejo_km2=38.0,       # ajustado de 39 a 38, coherente con procesamiento satelital
-        cota_min_m=2569.47,         # derivado de la curva batimétrica a 30 Mm³
-        cota_max_m=2598.09,         # derivado de la curva batimétrica a 690 Mm³
+        cota_min_m=2566.63,         # derivado de 9.90 Mm³ (volumen muerto oficial)
+        cota_max_m=2598.38,         # derivado de 699.43 Mm³ (volumen total oficial)
         descarga_max_m3s=40.0,      # PENDIENTE verificar con fuente oficial
     ),
 }
