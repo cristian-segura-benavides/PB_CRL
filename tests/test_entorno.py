@@ -16,10 +16,10 @@ import pytest
 from pbcrl.data_contracts.embalses import EMBALSES, ParametrosEmbalse
 from pbcrl.environment.config import ConfigEntorno
 from pbcrl.environment.entorno import EntornoEmbalses, ForzantesExternos
+from pbcrl.data_contracts.curvas import volumen_a_cota
 from pbcrl.environment.hidraulica import (
     _M3S_A_MM3_DIA,
     recortar_suministro,
-    volumen_a_cota,
 )
 from pbcrl.environment.penalizaciones import pen_descenso_nivel_sisga
 
@@ -72,7 +72,7 @@ class TestReset:
         env = EntornoEmbalses()
         estado = env.reset()
         for nombre, params in env.embalses.items():
-            cota_esperada = volumen_a_cota(estado.volumen_mm3[nombre], params)
+            cota_esperada = volumen_a_cota(estado.volumen_mm3[nombre], nombre, params)
             assert abs(estado.cota_m[nombre] - cota_esperada) < 1e-9
 
     def test_caudal_natural_inicial(self):

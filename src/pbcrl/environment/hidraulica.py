@@ -14,35 +14,12 @@ CONVERSIONES DE UNIDADES (idénticas a las de balance.py)
 from __future__ import annotations
 
 from pbcrl.data_contracts.embalses import ParametrosEmbalse
+from pbcrl.data_contracts.curvas import volumen_a_cota  # re-exportado desde curvas.py
 
 # Constantes de conversión (duplicadas aquí para que este módulo sea autocontenido)
 _S_POR_DIA: float = 86_400.0
 _M3S_A_MM3_DIA: float = _S_POR_DIA / 1e6    # 0.0864  [m³/s → Mm³/día]
 _MM_KM2_A_MM3: float = 1e-3                  # [mm × km² → Mm³]
-
-
-def volumen_a_cota(volumen_mm3: float, params: ParametrosEmbalse) -> float:
-    """Convierte volumen almacenado a cota mediante interpolación lineal.
-
-    PROVISIONAL: usa una relación lineal entre los puntos extremos operativos.
-    Debe reemplazarse con la curva batimétrica real (tabla h-V) cuando esté disponible.
-
-    Parámetros
-    ----------
-    volumen_mm3 : float
-        Volumen almacenado [Mm³].
-    params : ParametrosEmbalse
-        Parámetros del embalse (define los extremos de la interpolación).
-
-    Retorna
-    -------
-    float
-        Cota estimada [m.s.n.m.]. Acotada entre cota_min_m y cota_max_m.
-    """
-    rango_vol = params.capacidad_max_mm3 - params.capacidad_min_mm3
-    fraccion = (volumen_mm3 - params.capacidad_min_mm3) / rango_vol
-    fraccion = max(0.0, min(1.0, fraccion))
-    return params.cota_min_m + fraccion * (params.cota_max_m - params.cota_min_m)
 
 
 def recortar_suministro(

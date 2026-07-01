@@ -19,12 +19,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pbcrl.data_contracts.curvas import volumen_a_cota
 from pbcrl.data_contracts.embalses import EMBALSES, ParametrosEmbalse
 from pbcrl.environment.config import ConfigEntorno
 from pbcrl.environment.hidraulica import (
     paso_embalse,
     recortar_suministro,
-    volumen_a_cota,
 )
 from pbcrl.environment.penalizaciones import (
     pen_descenso_nivel_sisga,
@@ -184,7 +184,7 @@ class EntornoEmbalses:
             }
 
         cotas = {
-            nombre: volumen_a_cota(vol, self.embalses[nombre])
+            nombre: volumen_a_cota(vol, nombre, self.embalses[nombre])
             for nombre, vol in volumenes_iniciales_mm3.items()
         }
 
@@ -261,7 +261,7 @@ class EntornoEmbalses:
 
         # --- Nuevas cotas ---
         nuevas_cotas = {
-            nombre: volumen_a_cota(vol, self.embalses[nombre])
+            nombre: volumen_a_cota(vol, nombre, self.embalses[nombre])
             for nombre, vol in nuevos_volumenes.items()
         }
 

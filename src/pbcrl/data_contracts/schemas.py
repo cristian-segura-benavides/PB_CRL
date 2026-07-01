@@ -38,9 +38,9 @@ ESQUEMA_EMBALSE: dict[str, str] = {
 }
 
 # Rangos físicos de referencia (usados en validación de sanidad, no para síntesis).
-# El límite inferior de cota_m es 2600 m para cubrir el Sisga (cota mínima ~2644 m.s.n.m.).
+# El límite inferior de cota_m es 2550 m para cubrir el Tominé (cota mínima batimétrica ~2559 m).
 _RANGOS_SANIDAD: dict[str, tuple[float, float]] = {
-    "cota_m": (2600.0, 3100.0),
+    "cota_m": (2550.0, 3100.0),
     "volumen_mm3": (0.0, 1000.0),
     "descarga_m3s": (0.0, 100.0),
     "precipitacion_mm": (0.0, 200.0),

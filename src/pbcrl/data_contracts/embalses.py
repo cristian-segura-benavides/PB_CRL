@@ -67,14 +67,19 @@ EMBALSES: dict[str, ParametrosEmbalse] = {
         cota_max_m=2670.35,         # nivel de aguas máximas
         descarga_max_m3s=15.0,      # sin dato documentado que lo contradiga
     ),
-    # Fuente: aproximación de fuentes públicas. PENDIENTE verificar con batimetría SURER 2022.
+    # Fuente: batimetría oficial Tominé 2021, GEB/Enel (curva cota-volumen en data_contracts/curvas.py).
+    # cota_min_m y cota_max_m se derivan de la curva real a capacidad_min y capacidad_max:
+    #   cota a 30 Mm³  → interpolación en curva → ~2569.47 m
+    #   cota a 690 Mm³ → interpolación en curva → ~2598.09 m
+    # Estos valores se usan para la penalización por proximidad al mínimo; la conversión
+    # cota↔volumen usa directamente la curva (no la interpolación lineal entre estos extremos).
     "Tomine": ParametrosEmbalse(
         nombre="Tomine",
         capacidad_max_mm3=690.0,
         capacidad_min_mm3=30.0,
         area_espejo_km2=38.0,       # ajustado de 39 a 38, coherente con procesamiento satelital
-        cota_min_m=2890.0,          # PENDIENTE verificar
-        cota_max_m=2950.0,          # PENDIENTE verificar
-        descarga_max_m3s=40.0,      # PENDIENTE verificar
+        cota_min_m=2569.47,         # derivado de la curva batimétrica a 30 Mm³
+        cota_max_m=2598.09,         # derivado de la curva batimétrica a 690 Mm³
+        descarga_max_m3s=40.0,      # PENDIENTE verificar con fuente oficial
     ),
 }
