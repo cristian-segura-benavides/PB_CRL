@@ -34,6 +34,27 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
+## Tablero de exploracion
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Para abrirlo sin servidor, genera la version HTML y abre el archivo resultante:
+
+```bash
+python dashboard/export_html.py
+```
+
+Luego abre `dashboard/pbcrl_dashboard.html` en el navegador.
+
+El tablero muestra:
+
+- Volumen historico de Neusa y Sisga desde el Excel de la CAR.
+- Afluencias calculadas con el balance hidrico inverso usando evaporacion diaria.
+- Limites minimos y maximos operativos de los tres embalses.
+- Tominé como serie pendiente, sin inventar volumen ni afluencia diaria.
+
 ## Embalses
 
 | Embalse | Capacidad útil (Mm³) | Área espejo (km²) |
