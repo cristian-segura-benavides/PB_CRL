@@ -22,9 +22,11 @@ env/
 # Datos reales (nunca versionar)
 data/raw/
 data/processed/
+info_CAR/
 *.csv
 *.xlsx
 *.parquet
+*.pdf
 
 # IDEs
 .vscode/
