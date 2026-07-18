@@ -10,7 +10,11 @@ import pandas as pd
 import pytest
 
 from pbcrl.data_contracts.embalses import EMBALSES, ParametrosEmbalse
-from pbcrl.hydrology.balance import calcular_afluencia, reconstruir_volumen
+from pbcrl.hydrology.balance import (
+    _M3S_A_MM3_DIA,
+    calcular_afluencia,
+    reconstruir_volumen,
+)
 from pbcrl.synthetic.generador import generar_serie_sintetica
 
 
@@ -108,6 +112,74 @@ def test_conservacion_de_masa(params_neusa, df_sintetico):
         volumen_original.iloc[1:].to_numpy(),
         atol=1e-9,
         err_msg="Conservación de masa violada: el volumen reconstruido difiere del original.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bombeo (solo Tominé): término opcional del balance
+# ---------------------------------------------------------------------------
+
+def _serie_bombeo_mm3(index: pd.DatetimeIndex) -> pd.Series:
+    """Serie de bombeo determinista en Mm³/día: muchos ceros y algunos pulsos."""
+    valores = np.zeros(len(index))
+    valores[2::7] = 0.30   # pulsos periódicos de bombeo
+    valores[5::11] = 0.75
+    return pd.Series(valores, index=index, name="bombeo_mm3")
+
+
+def test_bombeo_none_identico_a_ceros(params_neusa, df_sintetico):
+    """bombeo=None produce resultados BIT-idénticos a bombeo=ceros.
+
+    Garantiza que Neusa/Sisga (sin bombeo) no cambian en absoluto.
+    """
+    afl_none = calcular_afluencia(df_sintetico, params_neusa)
+    afl_ceros = calcular_afluencia(
+        df_sintetico, params_neusa, bombeo_mm3=np.zeros(len(df_sintetico))
+    )
+    np.testing.assert_array_equal(afl_none.to_numpy(), afl_ceros.to_numpy())
+
+
+def test_bombeo_resta_afluencia_natural(params_neusa, df_sintetico):
+    """El bombeo desplaza la afluencia natural exactamente en bombeo/0.0864 [m³/s]."""
+    bombeo = _serie_bombeo_mm3(df_sintetico.index)
+    afl_sin = calcular_afluencia(df_sintetico, params_neusa)
+    afl_con = calcular_afluencia(df_sintetico, params_neusa, bombeo_mm3=bombeo)
+
+    esperado = afl_sin - bombeo / _M3S_A_MM3_DIA
+    np.testing.assert_allclose(
+        afl_con.iloc[1:].to_numpy(),
+        esperado.iloc[1:].to_numpy(),
+        atol=1e-9,
+        err_msg="La afluencia con bombeo debe ser la natural menos el bombeo (en m³/s).",
+    )
+
+
+def test_conservacion_de_masa_con_bombeo():
+    """Conservación de masa CON bombeo (caso Tominé).
+
+    Si reconstruyo el volumen incluyendo el bombeo como entrada, recupero el volumen
+    original con tolerancia de punto flotante.
+    """
+    params = EMBALSES["Tomine"]
+    df = generar_serie_sintetica(params, semilla=7)
+    bombeo = _serie_bombeo_mm3(df.index)
+
+    afluencia = calcular_afluencia(df, params, bombeo_mm3=bombeo)
+    volumen_rec = reconstruir_volumen(
+        afluencia_m3s=afluencia,
+        descarga_m3s=df["descarga_m3s"],
+        precipitacion_mm=df["precipitacion_mm"],
+        evaporacion_mm=df["evaporacion_mm"],
+        params=params,
+        volumen_inicial_mm3=df["volumen_mm3"].iloc[0],
+        bombeo_mm3=bombeo,
+    )
+
+    np.testing.assert_allclose(
+        volumen_rec.iloc[1:].to_numpy(),
+        df["volumen_mm3"].iloc[1:].to_numpy(),
+        atol=1e-9,
+        err_msg="Conservación de masa violada con bombeo incluido.",
     )
 
 

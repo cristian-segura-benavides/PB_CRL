@@ -11,9 +11,15 @@ Diseño
   (interpolación entre cota_min/cota_max de ParametrosEmbalse).
 - El registro `CURVAS` es el único lugar donde se declara qué embalses tienen curva real.
 
-Estado actual (2026-07-01)
+Convención de volumen
+---------------------
+Todas las curvas y parámetros están en VOLUMEN ÚTIL (cero = nivel mínimo operativo);
+ver `data_contracts.embalses.CONVENCION_VOLUMEN`. La curva de Tominé se referenció al
+datum del volumen muerto restando 9.90 Mm³ a la tabla original en total.
+
+Estado actual (2026-07-17)
 --------------------------
-  Tominé : curva real — batimetría oficial 2021, GEB/Enel.
+  Tominé : curva real — batimetría oficial 2021, GEB/Enel (en volumen útil).
   Neusa  : PENDIENTE — curva de la CAR no disponible aún.
   Sisga  : PENDIENTE — curva de la CAR no disponible aún.
 
@@ -105,9 +111,14 @@ class CurvaCotaVolumen:
 
 
 # ---------------------------------------------------------------------------
-# Curva de Tominé
+# Curva de Tominé — convención VOLUMEN ÚTIL (ver data_contracts.embalses)
 # Fuente: batimetría oficial Tominé 2021, GEB/Enel.
-#         Extremos anclados a volumen muerto (30 Mm³) y nivel máximo (690 Mm³).
+# Datum referenciado al volumen muerto (9.90 Mm³): a cada volumen de la tabla original
+# (total) se le restó 9.90 Mm³, de modo que el cero útil coincide con el nivel mínimo
+# operativo. Anclas: cota 2566.63 → 0.00 Mm³; cota 2598.38 → 689.53 Mm³.
+# Los primeros puntos (cotas < 2566.63, bajo el mínimo operativo) quedan con volumen
+# útil negativo por construcción: representan la zona de volumen muerto, fuera del
+# rango de operación; la curva se mantiene estrictamente creciente.
 # ---------------------------------------------------------------------------
 
 CURVA_TOMINE = CurvaCotaVolumen(
@@ -123,16 +134,17 @@ CURVA_TOMINE = CurvaCotaVolumen(
         2592.461, 2593.129, 2593.597, 2594.198, 2594.800,
         2595.401, 2596.069, 2598.380,
     ],
+    # Volumen ÚTIL = volumen total (batimetría 2021) − 9.90 Mm³ (volumen muerto).
     volumenes_mm3=[
-          0.759,   1.533,   2.311,   3.850,   4.636,
-          9.171,   9.900,  17.449,  26.471,  34.737,
-         46.003,  59.516,  72.277,  82.786,  95.541,
-        109.795, 129.299, 147.304, 165.306, 183.305,
-        201.305, 218.553, 238.052, 263.547, 286.044,
-        307.038, 325.034, 343.028, 362.522, 380.514,
-        403.005, 422.497, 439.740, 460.731, 481.723,
-        503.461, 522.953, 540.193, 561.182, 579.175,
-        600.913, 623.401, 699.430,
+         -9.141,  -8.367,  -7.589,  -6.050,  -5.264,
+         -0.729,   0.000,   7.549,  16.571,  24.837,
+         36.103,  49.616,  62.377,  72.886,  85.641,
+         99.895, 119.399, 137.404, 155.406, 173.405,
+        191.405, 208.653, 228.152, 253.647, 276.144,
+        297.138, 315.134, 333.128, 352.622, 370.614,
+        393.105, 412.597, 429.840, 450.831, 471.823,
+        493.561, 513.053, 530.293, 551.282, 569.275,
+        591.013, 613.501, 689.530,
     ],
 )
 

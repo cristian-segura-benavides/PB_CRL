@@ -24,18 +24,31 @@ cuadrática que fuerza el cumplimiento del límite.
 2. Estado actual del código (construido y probado)
 
 
+Convención de volumen: RESUELTA y definitiva, confirmada con el asesor. Los tres
+embalses en volumen ÚTIL (cero = volumen muerto). Punto central y reversible:
+data_contracts/embalses.py, constante CONVENCION_VOLUMEN. Volúmenes muertos restados:
+Neusa 7.0 (manual CAR), Sisga 4.7 (batimetría CAR 2004), Tominé 9.90 (batimetría 2021).
+Capacidades útiles resultantes: Neusa 95.3, Sisga 89.6, Tominé 689.53 Mm³.
 Balance hídrico inverso (hydrology/balance.py): conservación de masa exacta (1e-9).
+Incluye término de BOMBEO opcional (por defecto cero; Neusa/Sisga sin cambio). Solo
+Tominé lo usa: es el único embalse con entrada artificial por bombeo (canal Achurí).
 Contrato de datos (data_contracts/schemas.py): esquema + validación por embalse.
-Parámetros de embalses (data_contracts/embalses.py): valores reales con fuente.
-Curvas cota-volumen (data_contracts/curvas.py): curva real de Tominé (batimetría 2021),
-fallback lineal para Neusa/Sisga.
+Parámetros de embalses (data_contracts/embalses.py): valores reales con fuente, en
+volumen útil.
+Curvas cota-volumen (data_contracts/curvas.py): curva real de Tominé (batimetría 2021,
+desplazada a volumen útil), fallback lineal para Neusa/Sisga.
 Generador sintético (synthetic/): datos de prueba.
 Entorno (environment/): acople a El Sol, cota física, penalizaciones diferenciadas,
 detección (no forzado aún) de violación del caudal ecológico.
-Tablero de exploración (dashboard/, Streamlit + Plotly): series de volumen de
-Neusa/Sisga, afluencias calculadas con balance inverso, límites activables, slider de
-fechas, y tratamiento en dos capas de afluencias negativas con reporte de diagnóstico.
-78/78 pruebas pasan (core del modelo). El tablero es módulo aparte del core.
+Cargador de Tominé (data_ingest/tomine.py): serie operativa 2015-2025 desde Excel
+Enlaza (cota, volumen útil, descarga, bombeo, lluvia) + evaporación ERA5-Land.
+Tablero de exploración (dashboard/, Streamlit + Plotly): series de volumen y afluencia
+de los TRES embalses — Tominé integrado esta sesión, incluyendo su balance con bombeo.
+Límites activables, slider de fechas + calendario sincronizado, tratamiento en dos
+capas de afluencias negativas con reporte de diagnóstico, cotas corruptas de la CAR
+corregidas (Neusa 4, Sisga 4), y marcadores de días con bombeo sobre la línea de
+volumen de Tominé.
+87/87 pruebas pasan (core del modelo). El tablero es módulo aparte del core.
 
 
 
@@ -110,11 +123,28 @@ Batimetría oficial 2021 (SURER, GEB/Enel): capacidades, cotas, curva cota-volum
 (digitalizada con WebPlotDigitizer, anclada a valores oficiales).
 
 
+Recibido — Enlaza (operación interna de Tominé)
+
+
+Tominé: cota, volumen (Aforo, en volumen útil), descarga, bombeo y lluvia diaria
+2015-2025, vía Excel "datos operativos Tomine_Enlaza.xlsx". Integrado al cargador
+(data_ingest/tomine.py) y al tablero esta sesión.
+Evaporación de Tominé: RESUELTA y definitiva. Enlaza confirmó por escrito (radicado
+ENL-002443-2026-S) que Tominé NO tiene medición de evaporación ni evaporímetro propio.
+Se usa evaporación ERA5-Land (flujo de calor latente), ~3.19 mm/día (~1164 mm/año),
+validada en magnitud contra la evaporación medida de Neusa y Sisga.
+HALLAZGO: el Excel de Enlaza trae 14 hojas, varias ocultas por defecto:
+  - "Aforo": curva cota-volumen OFICIAL de Tominé (no digitalizada). Pendiente menor:
+    adoptarla en curvas.py en reemplazo de la curva digitalizada actual (ver #6).
+  - Series de Neusa y Sisga: sirven de VALIDACIÓN CRUZADA contra la CAR, no como fuente
+    del modelo (la CAR sigue siendo la fuente única, serie más larga 2009-2026).
+  - Saucío hasta 2025: RESUELVE el hueco que dejaba la serie de la CAR (que corta en
+    dic-2022, antes de El Niño). Revisar si conviene usarla para extender esa serie.
+
+
 En espera
 
 
-Tominé operación interna (nivel, volumen, descarga, bombeo diario): pedido a Enlaza/GEB
-(correspondencia@geb.com.co, PQR + correo). Sin respuesta aún.
 Curvas cota-volumen de Neusa y Sisga: pedidas a CAR, NO vinieron en el 2º envío. Insistir
 o digitalizar si aparecen en algún documento.
 
@@ -132,7 +162,10 @@ y verificar si da caudal o solo nivel.
 
 
 Descarga máxima de Tominé (40 m³/s): sin fuente. Verificar con Enlaza.
-Curva de Tominé: digitalizada aproximada, reemplazable por tabla oficial cm-a-cm de Enlaza.
+Curva de Tominé: digitalizada aproximada (pendiente menor). Ya se tiene la tabla oficial
+exacta (hoja "Aforo" del Excel Enlaza, en volumen útil); adoptarla en curvas.py daría
+mayor precisión — se detectó ~7 Mm³ de discrepancia con la digitalizada en el interior
+de la curva (los puntos ancla sí coinciden).
 Curvas de Neusa/Sisga: fallback lineal hasta recibir las reales.
 Niveles limnimétricos de la CAR: en cm, requieren curva de gastos o relación mira-cota.
 Afluencias negativas: tratadas en el tablero (acotadas a cero + reporte), pero la causa
@@ -148,6 +181,10 @@ Neusa, Sisga (parámetros y series): Manuales de operación + series, CAR, radic
 20261625095 y 20261071858.
 Funciones de embalses (Neusa abastecimiento+regulación; Sisga solo regulación): CAR, ABC de los embalses.
 Tominé (curva, capacidades, cotas): Batimetría oficial 2021, GEB/Enel (SURER).
+Tominé (operación diaria: cota, volumen, descarga, bombeo, lluvia): Enlaza, Excel
+"datos operativos Tomine_Enlaza.xlsx".
+Tominé (evaporación): ERA5-Land (flujo de calor latente). Ausencia de evaporímetro
+confirmada por Enlaza por escrito, radicado ENL-002443-2026-S.
 Estaciones: Catálogo de Estaciones CAR 2020; Catálogo Nacional IDEAM (datos.gov.co).
 El Sol: portal DHIME/IDEAM (dhime.ideam.gov.co).
 

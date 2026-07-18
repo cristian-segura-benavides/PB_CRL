@@ -3,7 +3,7 @@ Pruebas del módulo de curvas cota-volumen (data_contracts/curvas.py).
 
 Cobertura:
   (a) La curva de Tominé es monótona: mayor cota → mayor volumen.
-  (b) Puntos ancla exactos: cota 2566.63 → 9.9 Mm³; cota 2598.38 → 699.43 Mm³.
+  (b) Puntos ancla exactos (volumen ÚTIL): cota 2566.63 → 0.0 Mm³; cota 2598.38 → 689.53 Mm³.
   (c) cota_a_volumen y volumen_a_cota son inversas consistentes (round-trip).
   (d) Neusa y Sisga (sin curva) usan el fallback lineal sin romperse.
   (e) Acotación fuera de rango: sin extrapolación fuera de la tabla.
@@ -56,23 +56,23 @@ class TestMonotoniaCurvTomine:
 
 class TestPuntosAnclaTomIne:
     def test_ancla_inferior(self):
-        """cota 2566.63 → volumen exactamente 9.9 Mm³ (punto de la tabla)."""
+        """cota 2566.63 → volumen útil exactamente 0.0 Mm³ (mínimo operativo)."""
         vol = CURVA_TOMINE.cota_a_volumen(2566.63)
-        assert abs(vol - 9.9) < 1e-9
+        assert abs(vol - 0.0) < 1e-9
 
     def test_ancla_superior(self):
-        """cota 2598.38 → volumen exactamente 699.43 Mm³ (punto de la tabla)."""
+        """cota 2598.38 → volumen útil exactamente 689.53 Mm³ (capacidad útil)."""
         vol = CURVA_TOMINE.cota_a_volumen(2598.38)
-        assert abs(vol - 699.43) < 1e-9
+        assert abs(vol - 689.53) < 1e-9
 
     def test_ancla_inversa_inferior(self):
-        """volumen 9.9 Mm³ → cota exactamente 2566.63 m."""
-        cota = CURVA_TOMINE.volumen_a_cota(9.9)
+        """volumen útil 0.0 Mm³ → cota exactamente 2566.63 m."""
+        cota = CURVA_TOMINE.volumen_a_cota(0.0)
         assert abs(cota - 2566.63) < 1e-9
 
     def test_ancla_inversa_superior(self):
-        """volumen 699.43 Mm³ → cota exactamente 2598.38 m."""
-        cota = CURVA_TOMINE.volumen_a_cota(699.43)
+        """volumen útil 689.53 Mm³ → cota exactamente 2598.38 m."""
+        cota = CURVA_TOMINE.volumen_a_cota(689.53)
         assert abs(cota - 2598.38) < 1e-9
 
 
@@ -159,8 +159,12 @@ class TestAcotacionFueraDeRango:
         assert abs(vol - CURVA_TOMINE.volumen_max_mm3) < 1e-9
 
     def test_volumen_bajo_minimo_da_cota_minima(self):
-        """Un volumen por debajo del mínimo de la tabla devuelve la cota mínima."""
-        cota = CURVA_TOMINE.volumen_a_cota(0.0)
+        """Un volumen por debajo del mínimo de la tabla devuelve la cota mínima.
+
+        En convención útil la tabla llega hasta un volumen mínimo negativo (zona de
+        volumen muerto); se usa un valor claramente por debajo de ese mínimo.
+        """
+        cota = CURVA_TOMINE.volumen_a_cota(CURVA_TOMINE.volumen_min_mm3 - 10.0)
         assert abs(cota - CURVA_TOMINE.cota_min_m) < 1e-9
 
     def test_volumen_sobre_maximo_da_cota_maxima(self):

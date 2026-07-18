@@ -1,11 +1,12 @@
 """Tablero de exploracion de embalses para PB-CRL.
 
-Volumen: Excel CAR 20261065095_Embalses.xlsx.
-Afluencias: balance hidrico inverso con evaporacion de ae (49).xlsx.
-Tominé: sin serie operativa diaria en esta entrega.
+Neusa, Sisga: Excel CAR 20261065095_Embalses.xlsx (volumen) + ae (49).xlsx (evaporacion).
+Tominé: Excel Enlaza (volumen, cota, descarga, bombeo, lluvia) + evaporacion ERA5-Land.
+Afluencias: balance hidrico inverso (incluye termino de bombeo para Tominé).
 """
 from __future__ import annotations
 
+from datetime import datetime, time
 from pathlib import Path
 import sys
 
@@ -48,15 +49,53 @@ def _load_context(volume_jump_fraction: float, negative_warning_threshold_m3s: f
         return load_dashboard_context()
 
 
-def _date_slider(min_date: pd.Timestamp, max_date: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
-    selected = st.sidebar.slider(
+def _date_range_controls(min_date: pd.Timestamp, max_date: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Slider y calendario sincronizados para elegir el rango de fechas, con reset."""
+    full_slider = (min_date.to_pydatetime(), max_date.to_pydatetime())
+    full_cal = (min_date.date(), max_date.date())
+    if "rango_slider" not in st.session_state:
+        st.session_state["rango_slider"] = full_slider
+    if "rango_cal" not in st.session_state:
+        st.session_state["rango_cal"] = full_cal
+
+    def _sync_from_slider() -> None:
+        start, end = st.session_state["rango_slider"]
+        st.session_state["rango_cal"] = (start.date(), end.date())
+
+    def _sync_from_calendar() -> None:
+        value = st.session_state["rango_cal"]
+        # date_input devuelve una tupla de 1 elemento mientras el usuario elige el fin.
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            start, end = value
+            st.session_state["rango_slider"] = (
+                datetime.combine(start, time.min),
+                datetime.combine(end, time.min),
+            )
+
+    def _reset() -> None:
+        st.session_state["rango_slider"] = full_slider
+        st.session_state["rango_cal"] = full_cal
+
+    st.sidebar.slider(
         "Rango de fechas",
         min_value=min_date.to_pydatetime(),
         max_value=max_date.to_pydatetime(),
-        value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
         format="YYYY-MM-DD",
+        key="rango_slider",
+        on_change=_sync_from_slider,
     )
-    return pd.Timestamp(selected[0]), pd.Timestamp(selected[1])
+    st.sidebar.date_input(
+        "Rango de fechas por Calendario",
+        min_value=min_date.date(),
+        max_value=max_date.date(),
+        format="YYYY-MM-DD",
+        key="rango_cal",
+        on_change=_sync_from_calendar,
+    )
+    st.sidebar.button("Reset", width="stretch", on_click=_reset)
+
+    start, end = st.session_state["rango_slider"]
+    return pd.Timestamp(start), pd.Timestamp(end)
 
 
 def _add_limit_line(fig: go.Figure, name: str, y_value: float, start: pd.Timestamp, end: pd.Timestamp, suffix: str, dash: str) -> None:
@@ -68,6 +107,32 @@ def _add_limit_line(fig: go.Figure, name: str, y_value: float, start: pd.Timesta
             name=f"{name} {suffix}",
             line=dict(color=COLORS.get(name, "#666666"), dash=dash),
             hoverinfo="skip",
+        )
+    )
+
+
+PUMPING_MARKER_COLOR = "#d62728"  # rojo: contrasta con el naranja de la linea de Tomine
+
+
+def _add_pumping_markers(fig: go.Figure, frame: pd.DataFrame) -> None:
+    """Marca con circulos los dias de bombeo (entrada artificial) sobre la linea de volumen.
+
+    Solo aplica a Tominé (unico embalse con bombeo); son eventos dispersos, no rachas.
+    """
+    if "bombeo_mm3" not in frame.columns:
+        return
+    pumped = frame[frame["bombeo_mm3"] > 0]
+    if pumped.empty:
+        return
+    fig.add_trace(
+        go.Scatter(
+            x=pumped.index,
+            y=pumped["volumen_mm3"],
+            mode="markers",
+            name="Días con bombeo (Tominé)",
+            marker=dict(color=PUMPING_MARKER_COLOR, size=8, symbol="circle", line=dict(color="white", width=1)),
+            customdata=(pumped["bombeo_mm3"] * 1e6),
+            hovertemplate="Fecha: %{x|%Y-%m-%d}<br>Bombeo: %{customdata:,.0f} m³<extra></extra>",
         )
     )
 
@@ -88,6 +153,8 @@ def _build_volume_figure(contexts, start: pd.Timestamp, end: pd.Timestamp, show_
                 line=dict(color=COLORS[name], width=2),
             )
         )
+        if name == "Tomine":
+            _add_pumping_markers(fig, frame)
         if show_limits:
             _add_limit_line(fig, name, context.params.capacidad_min_mm3, start, end, "volumen minimo", "dash")
             _add_limit_line(fig, name, context.params.capacidad_max_mm3, start, end, "volumen maximo", "dot")
@@ -138,7 +205,7 @@ def _build_inflow_figure(contexts, start: pd.Timestamp, end: pd.Timestamp) -> go
 
 def _diagnostics_note(contexts) -> str:
     parts = []
-    for name in ["Neusa", "Sisga"]:
+    for name in ["Neusa", "Sisga", "Tomine"]:
         diag = getattr(contexts[name], "diagnostics", None)
         if diag is None:
             parts.append(f"{name}: diagnostico no disponible en esta sesion.")
@@ -152,7 +219,7 @@ def _diagnostics_note(contexts) -> str:
 
 def _diagnostics_report_table(contexts) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
-    for name in ["Neusa", "Sisga"]:
+    for name in ["Neusa", "Sisga", "Tomine"]:
         diagnostics = getattr(contexts[name], "diagnostics", None)
         if diagnostics is None:
             rows.append(
@@ -222,11 +289,14 @@ def _diagnostics_report_table(contexts) -> pd.DataFrame:
 
 
 def main() -> None:
-    st.title("Tablero exploratorio de embalses PB-CRL")
+    st.title("Tablero exploratorio de embalses")
     st.caption(
-        "Volumen: Excel CAR 20261065095_Embalses.xlsx. Afluencias: balance hidrico inverso con evaporacion de ae (49).xlsx. "
-        "Tominé no tiene aun serie operativa diaria."
+        "Volumen: Informacion CAR. Afluencias: balance hidrico inverso con evaporacion "
     )
+
+    if st.sidebar.button("Recargar datos", width="stretch", help="Limpia la cache y vuelve a leer los Excel y los textos del data_loader."):
+        st.cache_data.clear()
+        st.rerun()
 
     st.sidebar.header("Parametros de depuracion de series")
     volume_jump_fraction = st.sidebar.number_input(
@@ -256,8 +326,8 @@ def main() -> None:
         return
 
     show_limits = st.sidebar.checkbox("Mostrar limites operativos", value=True)
-    st.sidebar.caption("Muestra u oculta series clicando su nombre en la leyenda de cada grafica (doble clic para aislar una).")
-    start, end = _date_slider(min_date, max_date)
+    st.sidebar.caption("Un Click para activar/desactivar y dos para aislar")
+    start, end = _date_range_controls(min_date, max_date)
 
     tab_series, tab_diagnostic = st.tabs(["Series", "Diagnostico"])
 
@@ -272,11 +342,17 @@ def main() -> None:
             status_rows = []
             for name in ["Neusa", "Sisga", "Tomine"]:
                 context = contexts[name]
+                serie_disponible = "Disponible" if not context.frame.empty else "Pendiente"
+                afluencia_disponible = (
+                    "Disponible"
+                    if "afluencia_m3s" in context.frame.columns and not context.frame.empty
+                    else "Pendiente"
+                )
                 status_rows.append(
                     {
                         "embalse": name,
-                        "serie_volumen": "Disponible" if not context.frame.empty else "Pendiente",
-                        "serie_afluencia": "Disponible" if name != "Tomine" else "Pendiente",
+                        "serie_volumen": serie_disponible,
+                        "serie_afluencia": afluencia_disponible,
                         "estado": context.operational_status,
                     }
                 )
@@ -289,10 +365,22 @@ def main() -> None:
             st.info(_diagnostics_note(contexts))
 
             st.subheader("Fuentes por grafica")
+            st.write("**Neusa, Sisga**")
             st.write("Volumen: Excel CAR 20261065095_Embalses.xlsx.")
-            st.write("Afluencias: calculadas con pbcrl.hydrology.balance.calcular_afluencia.")
             st.write("Evaporacion: Excel CAR ae (49).xlsx.")
-            st.write("Tominé: sin serie operativa diaria en esta entrega.")
+            st.write("**Tominé**")
+            st.write("Volumen, cota, descarga, bombeo, lluvia: Excel Enlaza (datos operativos Tomine_Enlaza.xlsx).")
+            st.write(
+                "Evaporacion: ERA5-Land (flujo de calor latente). Enlaza confirmo por escrito "
+                "(radicado ENL-002443-2026-S) que Tominé no cuenta con medicion de evaporacion ni "
+                "evaporimetro; se valido en magnitud (~3.19 mm/dia) contra la evaporacion medida de "
+                "Neusa y Sisga."
+            )
+            st.write("**Todos los embalses**")
+            st.write(
+                "Afluencias: calculadas con pbcrl.hydrology.balance.calcular_afluencia "
+                "(para Tominé incluye el termino de bombeo)."
+            )
 
     with tab_diagnostic:
         st.subheader("Diagnostico de afluencias negativas")
@@ -303,7 +391,7 @@ def main() -> None:
 
         st.subheader("Resumen por embalse")
         summary_rows = []
-        for name in ["Neusa", "Sisga"]:
+        for name in ["Neusa", "Sisga", "Tomine"]:
             diag = getattr(contexts[name], "diagnostics", None)
             if diag is None:
                 summary_rows.append(

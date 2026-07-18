@@ -4,14 +4,26 @@ Balance hídrico inverso para embalses.
 Ecuación de conservación de masa (paso diario):
 
     afluencia(t) = ΔV(t) + descarga(t) + evaporación_vol(t)
-                   - precipitación_vol(t) + vertimiento(t)
+                   - precipitación_vol(t) - bombeo(t) + vertimiento(t)
 
 donde:
     ΔV(t) = V(t) - V(t-1)                    [Mm³]
     descarga(t)          : salida controlada   [Mm³]  ← convertida de m³/s
     evaporación_vol(t)   : lámina × área       [Mm³]  ← convertida de mm × km²
     precipitación_vol(t) : lámina × área       [Mm³]  ← convertida de mm × km²
+    bombeo(t)            : entrada artificial   [Mm³]  ← ya en Mm³/día (sin conversión)
     vertimiento(t)       : salida por aliviadero [Mm³] ← calculada internamente
+
+TÉRMINO DE BOMBEO (opcional; solo Tominé)
+-----------------------------------------
+Tominé es el único de los tres embalses que bombea agua desde el río HACIA el vaso
+(entrada artificial). Parte del aumento de volumen proviene de ese bombeo y no de la
+afluencia natural, por lo que el bombeo se RESTA para aislar la afluencia natural.
+Es un parámetro OPCIONAL con valor por defecto cero: Neusa y Sisga (sin bombeo) se
+calculan exactamente igual que antes, sin cambio alguno en sus resultados.
+El bombeo ya viene en Mm³/día desde el loader de Tominé (convertido allí desde m³
+absolutos: m³ ÷ 1e6 = Mm³), así que entra DIRECTAMENTE al balance, sin factor de
+conversión adicional.
 
 CONVERSIONES DE UNIDADES (documentadas explícitamente para evitar errores)
 ---------------------------------------------------------------------------
@@ -66,10 +78,36 @@ def _calcular_vertimiento(
     return max(0.0, volumen_final_mm3 - capacidad_max_mm3)
 
 
+def _bombeo_a_array(
+    bombeo_mm3: "pd.Series | np.ndarray | None",
+    index: pd.DatetimeIndex,
+    n: int,
+) -> np.ndarray:
+    """Normaliza el bombeo a un array de longitud n en Mm³/día.
+
+    None -> serie de ceros (embalse sin bombeo, p.ej. Neusa/Sisga). Un pd.Series se
+    alinea por índice a `index`. Los NaN se tratan como cero (día sin bombeo). El
+    bombeo NO se convierte: se asume ya en Mm³/día (ver encabezado del módulo).
+    """
+    if bombeo_mm3 is None:
+        return np.zeros(n)
+    if isinstance(bombeo_mm3, pd.Series):
+        arr = bombeo_mm3.reindex(index).to_numpy(dtype=float)
+    else:
+        arr = np.asarray(bombeo_mm3, dtype=float)
+    if arr.shape[0] != n:
+        raise ValueError(
+            f"bombeo_mm3 debe tener longitud {n} (una por paso de tiempo); "
+            f"se recibió {arr.shape[0]}."
+        )
+    return np.nan_to_num(arr, nan=0.0)
+
+
 def calcular_afluencia(
     df: pd.DataFrame,
     params: ParametrosEmbalse,
     validar: bool = True,
+    bombeo_mm3: "pd.Series | np.ndarray | None" = None,
 ) -> pd.Series:
     """Estima la afluencia diaria a un embalse mediante balance hídrico inverso.
 
@@ -81,6 +119,7 @@ def calcular_afluencia(
                          + descarga_mm3(t)           # salida controlada
                          + evaporacion_mm3(t)        # pérdida por evaporación
                          - precipitacion_mm3(t)      # ganancia por precipitación
+                         - bombeo_mm3(t)             # entrada artificial (solo Tominé)
                          + vertimiento_mm3(t)        # salida por aliviadero
 
     El primer paso (t=0) no tiene t-1, por lo que se devuelve NaN para ese día.
@@ -94,6 +133,11 @@ def calcular_afluencia(
         Parámetros físicos del embalse (capacidad máxima, área del espejo).
     validar : bool
         Si True, valida el DataFrame contra el contrato antes de procesar.
+    bombeo_mm3 : pd.Series | np.ndarray | None
+        Entrada artificial por bombeo, YA en Mm³/día (sin conversión). Opcional; por
+        defecto None = sin bombeo (serie de ceros), de modo que Neusa y Sisga se
+        calculan idénticamente que antes. Solo Tominé pasa una serie real. Un pd.Series
+        se alinea por índice; los NaN se tratan como cero.
 
     Retorna
     -------
@@ -125,6 +169,9 @@ def calcular_afluencia(
     precipitacion_mm3 = precipitacion_mm * params.area_espejo_km2 * _MM_KM2_A_MM3
     evaporacion_mm3 = evaporacion_mm * params.area_espejo_km2 * _MM_KM2_A_MM3
 
+    # Bombeo: ya en Mm³/día (sin conversión). None -> ceros (Neusa/Sisga inalterados).
+    bombeo_mm3_arr = _bombeo_a_array(bombeo_mm3, df.index, n)
+
     for t in range(1, n):
         delta_v = volumen[t] - volumen[t - 1]      # ΔV [Mm³]
 
@@ -141,6 +188,7 @@ def calcular_afluencia(
             + descarga_mm3[t]
             + evaporacion_mm3[t]
             - precipitacion_mm3[t]
+            - bombeo_mm3_arr[t]
             + vertimiento_mm3
         )
 
@@ -162,6 +210,7 @@ def reconstruir_volumen(
     evaporacion_mm: pd.Series,
     params: ParametrosEmbalse,
     volumen_inicial_mm3: float,
+    bombeo_mm3: "pd.Series | np.ndarray | None" = None,
 ) -> pd.Series:
     """Reconstruye la serie de volumen a partir de la afluencia estimada.
 
@@ -180,6 +229,10 @@ def reconstruir_volumen(
         Parámetros físicos del embalse.
     volumen_inicial_mm3 : float
         Volumen en el primer paso de tiempo [Mm³].
+    bombeo_mm3 : pd.Series | np.ndarray | None
+        Entrada artificial por bombeo, YA en Mm³/día. Opcional (None = ceros). Debe
+        ser la MISMA serie que se pasó a `calcular_afluencia` para cerrar el balance.
+        Se suma como entrada al reconstruir el volumen.
 
     Retorna
     -------
@@ -194,6 +247,8 @@ def reconstruir_volumen(
     desc_mm3 = descarga_m3s.to_numpy() * _M3S_A_MM3_DIA
     prec_mm3 = precipitacion_mm.to_numpy() * params.area_espejo_km2 * _MM_KM2_A_MM3
     evap_mm3 = evaporacion_mm.to_numpy() * params.area_espejo_km2 * _MM_KM2_A_MM3
+    # Bombeo: ya en Mm³/día (sin conversión). None -> ceros.
+    bomb_mm3 = _bombeo_a_array(bombeo_mm3, afluencia_m3s.index, n)
 
     for t in range(1, n):
         v_bruto = (
@@ -202,6 +257,7 @@ def reconstruir_volumen(
             - desc_mm3[t]
             - evap_mm3[t]
             + prec_mm3[t]
+            + bomb_mm3[t]
         )
         vertimiento = _calcular_vertimiento(v_bruto, params.capacidad_max_mm3)
         volumen[t] = v_bruto - vertimiento
