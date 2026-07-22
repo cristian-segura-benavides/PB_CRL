@@ -87,7 +87,10 @@ pruebas pasan (core del modelo). El tablero es módulo aparte del core.
 3. Qué falta construir
 
 
-Shield de proyección cuadrática (contribución central). PENDIENTE reunión Sebastian.
+Shield de proyección cuadrática (contribución central): CONSTRUIDO v1 y VERIFICADO
+contra estados históricos (2026-07-22), aislado en src/pbcrl/shield/ (no conectado
+al entorno todavía). Tres restricciones lineales (cajas, rata de descenso de Sisga,
+caudal ecológico conjunto); proyección por bisección de KKT. Ver 4h.
 Agente de RL. PENDIENTE reunión.
 Modelo estocástico multivariado de afluencias: CONSTRUIDO v1 y ACEPTADO para el
 entregable (2026-07-22), aislado en src/pbcrl/stochastic/ (no conectado al entorno
@@ -389,6 +392,65 @@ pliegue) en vez de "entrenar con todo lo demás" como se planteó originalmente.
 Scripts fuente: scratch_stochastic/validacion_bloques.py (validación de 5 bloques,
 incluye el análisis de aislar a Neusa). Ver src/pbcrl/stochastic/README.md para el
 detalle completo y cómo entrenar/usar el modelo.
+
+
+4h. Shield de proyección cuadrática — v1 construido y verificado (2026-07-22)
+
+
+MÓDULO: src/pbcrl/shield/ (restricciones.py, proyeccion.py, README.md). CONTRIBUCIÓN
+CENTRAL del framework. AISLADO — no toca hidraulica.py, balance.py ni entorno.py;
+conectarlo al entorno es el siguiente paso, aún no hecho.
+
+FORMULACIÓN: a*_t = argmin_a ||a-â_t||² sujeto a g_k(s_t,a)<=0, con a=(Q_Neusa,
+Q_Sisga,Q_Tomine). Intercepta la INTENCIÓN del agente antes del recorte físico de
+disponibilidad (que sigue actuando después, sin cambios).
+
+TRES NIVELES DE RESTRICCIÓN, TODAS LINEALES:
+1. Cajas individuales: 0<=Q_i<=descarga_max_m3s(i) (ya en EMBALSES).
+2. Rata de descenso de Sisga (solo Sisga, manual CAR): se traduce a un límite
+   superior DINÁMICO sobre Q_Sisga, linealizando el balance con la pendiente local
+   cota-volumen (data_contracts.curvas, no duplicada — se re-evalúa la función
+   existente en dos puntos cercanos). Usa el mismo valor que ConfigEntorno.
+   sisga_descenso_umbral_cm (15 cm/día) pero como límite DURO, no como umbral de
+   penalización blanda (rol distinto del que tiene en penalizaciones.py).
+3. Caudal ecológico conjunto (la que justifica el Safe MARL, acopla las tres
+   variables): Q_ElSol=Q_Saucío+Q_Neusa+Q_Sisga+Q_Tomine-Q_extracción_nominal
+   >= Q_eco(mes). Reutiliza captaciones.py y caudal_ecologico.py sin duplicar.
+
+HALLAZGO MATEMÁTICO: el max(0,·) de la cota física de extracción de Tibitóc parece
+introducir no linealidad en la restricción conjunta, pero NO LA INTRODUCE — como
+Q_eco(mes) es siempre positivo (2.13 a 7.51 m³/s), la rama "extracción se lleva
+todo, El Sol=0" nunca puede satisfacer la restricción, así que se cancela
+algebraicamente y queda una única desigualdad lineal exacta (verificación por casos
+en proyeccion.py). El conjunto factible es un poliedro convexo genuino, sin
+aproximar.
+
+MÉTODO DE SOLUCIÓN: bisección sobre el multiplicador de KKT (caja ∩ un semiespacio),
+NO una librería de QP externa — con 3 variables y una sola restricción de acople el
+método analítico es simple y exactamente verificable; si el shield gana más
+restricciones de acople simultáneas más adelante, ahí sí se justificaría una
+librería general.
+
+VERIFICACIÓN HISTÓRICA (acción propuesta = descarga REAL observada, sin agente
+todavía; 4607 días con los cuatro componentes completos, 2012-01-02/2025-05-04):
+
+    escenario Tibitóc   ya factible   shield habría corregido   infactibles
+    histórico (4.5)     72.39%        27.61% (casi todo Nivel 2)      0
+    ampliado  (8.0)     33.17%        66.83% (casi todo Nivel 2)      0
+
+Violación de caja Sisga (rata de descenso): 4 días en ambos escenarios (0.09%,
+prácticamente nunca ata). Cero días verdaderamente infactibles (conjunto vacío) en
+todo el rango histórico, en ambos escenarios — el diseño de restricciones no
+colapsa el conjunto factible en ningún estado observado.
+
+VALIDACIÓN CRUZADA (no buscada, encontrada al comparar): el % de días donde el
+shield habría corregido (27.61% / 66.83%) coincide, de forma independiente, con el
+% de días en violación del VMF calculado en la sesión del umbral (27.13% / 66.75%,
+ver 4f) — dos piezas del proyecto construidas por separado y en momentos distintos
+llegan al mismo número. Refuerza confianza en ambas implementaciones.
+
+Scripts fuente: scratch_shield/verificacion_historica.py. Ver
+src/pbcrl/shield/README.md para el detalle completo y cómo usar el módulo.
 
 
 5. Datos: recibido / en espera / cerrado
