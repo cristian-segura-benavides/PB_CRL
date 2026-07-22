@@ -66,17 +66,25 @@ def paso_embalse(
     precipitacion_mm: float,
     evaporacion_mm: float,
     params: ParametrosEmbalse,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """Aplica la ecuación de balance hídrico hacia adelante en un paso diario.
 
     Ecuación (todas las cantidades en Mm³):
 
         V_bruto = V(t-1) + afluencia - suministro + precipitación - evaporación
         vertimiento = max(0, V_bruto - capacidad_max)
-        V(t)    = clamp(V_bruto - vertimiento, capacidad_min, capacidad_max)
+        V_sin_piso = V_bruto - vertimiento
+        deficit = max(0, capacidad_min - V_sin_piso)
+        V(t)    = V_sin_piso + deficit    # == clamp(V_sin_piso, capacidad_min, capacidad_max)
 
-    El clamp inferior cubre el caso extremo de evaporación muy alta con embalse casi vacío;
-    en condiciones normales, recortar_suministro ya garantiza V_bruto ≥ capacidad_min.
+    El clamp inferior cubre el caso extremo de evaporación muy alta con embalse casi
+    vacío; en condiciones normales, recortar_suministro ya garantiza V_bruto ≥
+    capacidad_min. Este acotamiento es físicamente correcto (el volumen no puede bajar
+    del volumen muerto), pero por sí solo "crea" masa silenciosamente cuando se activa:
+    `deficit_mm3` cuantifica exactamente cuánta, para que quede diagnosticable y
+    acumulable en vez de perderse sin dejar rastro (análogo a `deficit_extraccion_m3s`
+    de la extracción de Tibitóc, ver `calcular_extraccion_tibitoc`). NO representa una
+    entrada física real: es la magnitud del ajuste que el clamp tuvo que aplicar.
 
     Parámetros
     ----------
@@ -95,8 +103,9 @@ def paso_embalse(
 
     Retorna
     -------
-    tuple[float, float]
-        (nuevo_volumen_mm3 [Mm³], vertimiento_mm3 [Mm³])
+    tuple[float, float, float]
+        (nuevo_volumen_mm3 [Mm³], vertimiento_mm3 [Mm³], deficit_volumen_mm3 [Mm³])
+        deficit_volumen_mm3 es cero salvo cuando se activó el clamp inferior.
     """
     # Conversión de unidades
     afluencia_mm3 = afluencia_m3s * _M3S_A_MM3_DIA
@@ -108,9 +117,41 @@ def paso_embalse(
 
     # Aliviadero: vierte el exceso sobre la capacidad máxima
     vertimiento_mm3 = max(0.0, v_bruto - params.capacidad_max_mm3)
-    v_nuevo = v_bruto - vertimiento_mm3
+    v_sin_piso = v_bruto - vertimiento_mm3
 
-    # Cota inferior de seguridad (no bajar del volumen muerto)
-    v_nuevo = max(params.capacidad_min_mm3, v_nuevo)
+    # Cota inferior de seguridad (no bajar del volumen muerto). deficit_volumen_mm3
+    # registra cuánta masa exigió el ajuste (ver docstring); cero si no se activó.
+    deficit_volumen_mm3 = max(0.0, params.capacidad_min_mm3 - v_sin_piso)
+    v_nuevo = v_sin_piso + deficit_volumen_mm3
 
-    return v_nuevo, vertimiento_mm3
+    return v_nuevo, vertimiento_mm3, deficit_volumen_mm3
+
+
+def calcular_extraccion_tibitoc(caudal_bocatoma_m3s: float, caudal_nominal_m3s: float) -> float:
+    """Extracción real de la Planta de Tibitóc, acotada por el caudal disponible.
+
+    La planta no puede captar más agua de la que el río trae en la bocatoma en
+    ese instante (ver data_contracts.captaciones para la topología y los
+    escenarios de caudal nominal):
+
+        Q_extraccion = min(Q_nominal, Q_bocatoma)
+
+    Esta cota es la que garantiza que el caudal en El Sol (Q_bocatoma -
+    Q_extraccion) nunca sea negativo, a diferencia de restar un valor nominal
+    fijo sin considerar el caudal disponible.
+
+    Parámetros
+    ----------
+    caudal_bocatoma_m3s : float
+        Caudal disponible en la bocatoma antes de la extracción [m³/s]
+        (Saucío + descargas de Sisga, Tominé y Neusa).
+    caudal_nominal_m3s : float
+        Caudal nominal que la planta busca captar [m³/s] (escenario o serie real).
+
+    Retorna
+    -------
+    float
+        Extracción real [m³/s], nunca negativa ni superior al caudal disponible.
+    """
+    disponible = max(0.0, caudal_bocatoma_m3s)
+    return min(max(0.0, caudal_nominal_m3s), disponible)

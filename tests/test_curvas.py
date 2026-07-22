@@ -3,7 +3,12 @@ Pruebas del módulo de curvas cota-volumen (data_contracts/curvas.py).
 
 Cobertura:
   (a) La curva de Tominé es monótona: mayor cota → mayor volumen.
-  (b) Puntos ancla exactos (volumen ÚTIL): cota 2566.63 → 0.0 Mm³; cota 2598.38 → 689.53 Mm³.
+  (b) Puntos ancla coherentes con embalses.py (volumen ÚTIL): la curva debe dar
+      exactamente capacidad_min_mm3/capacidad_max_mm3 en cota_min_m/cota_max_m.
+      Estas pruebas comparan contra EMBALSES["Tomine"], NO contra literales
+      hardcodeados: si curvas.py y embalses.py se desincronizan (p.ej. al
+      adoptar la tabla oficial "Aforo" pendiente, ver NOTAS.md sección 6), fallan.
+      Ver también NOTAS.md sección 8 (regla "la curva es la fuente de verdad").
   (c) cota_a_volumen y volumen_a_cota son inversas consistentes (round-trip).
   (d) Neusa y Sisga (sin curva) usan el fallback lineal sin romperse.
   (e) Acotación fuera de rango: sin extrapolación fuera de la tabla.
@@ -51,29 +56,52 @@ class TestMonotoniaCurvTomine:
 
 
 # ---------------------------------------------------------------------------
-# (b) Puntos ancla exactos
+# (b) Puntos ancla coherentes con embalses.py (NO literales hardcodeados: esta es
+#     la prueba de coherencia entre curvas.py y embalses.py que garantiza que no
+#     se desincronicen — ver NOTAS.md secciones 3 y 8).
 # ---------------------------------------------------------------------------
 
 class TestPuntosAnclaTomIne:
     def test_ancla_inferior(self):
-        """cota 2566.63 → volumen útil exactamente 0.0 Mm³ (mínimo operativo)."""
-        vol = CURVA_TOMINE.cota_a_volumen(2566.63)
-        assert abs(vol - 0.0) < 1e-9
+        """cota_min_m de embalses.py -> capacidad_min_mm3 de embalses.py, vía la curva."""
+        params = EMBALSES["Tomine"]
+        vol = CURVA_TOMINE.cota_a_volumen(params.cota_min_m)
+        assert abs(vol - params.capacidad_min_mm3) < 1e-9
 
     def test_ancla_superior(self):
-        """cota 2598.38 → volumen útil exactamente 689.53 Mm³ (capacidad útil)."""
-        vol = CURVA_TOMINE.cota_a_volumen(2598.38)
-        assert abs(vol - 689.53) < 1e-9
+        """cota_max_m de embalses.py -> capacidad_max_mm3 de embalses.py, vía la curva."""
+        params = EMBALSES["Tomine"]
+        vol = CURVA_TOMINE.cota_a_volumen(params.cota_max_m)
+        assert abs(vol - params.capacidad_max_mm3) < 1e-9
 
     def test_ancla_inversa_inferior(self):
-        """volumen útil 0.0 Mm³ → cota exactamente 2566.63 m."""
-        cota = CURVA_TOMINE.volumen_a_cota(0.0)
-        assert abs(cota - 2566.63) < 1e-9
+        """capacidad_min_mm3 de embalses.py -> cota_min_m de embalses.py, vía la curva."""
+        params = EMBALSES["Tomine"]
+        cota = CURVA_TOMINE.volumen_a_cota(params.capacidad_min_mm3)
+        assert abs(cota - params.cota_min_m) < 1e-9
 
     def test_ancla_inversa_superior(self):
-        """volumen útil 689.53 Mm³ → cota exactamente 2598.38 m."""
-        cota = CURVA_TOMINE.volumen_a_cota(689.53)
-        assert abs(cota - 2598.38) < 1e-9
+        """capacidad_max_mm3 de embalses.py -> cota_max_m de embalses.py, vía la curva."""
+        params = EMBALSES["Tomine"]
+        cota = CURVA_TOMINE.volumen_a_cota(params.capacidad_max_mm3)
+        assert abs(cota - params.cota_max_m) < 1e-9
+
+    def test_extremo_superior_de_la_tabla_coincide_con_embalses_py(self):
+        """El último punto de la tabla batimétrica (cota_max_m/volumen_max_mm3,
+        el nivel de aguas máximas) debe coincidir EXACTAMENTE con embalses.py.
+
+        NOTA: el extremo INFERIOR de la tabla NO se compara aquí a propósito: la
+        tabla se extiende deliberadamente por debajo de cota_min_m (zona de
+        volumen muerto, con volumen útil negativo por construcción, ver el
+        comentario en curvas.py), así que CURVA_TOMINE.cota_min_m /
+        volumen_min_mm3 NO son el mínimo operativo — no deben coincidir con
+        embalses.py. La coherencia en el mínimo ya la garantizan
+        test_ancla_inferior/test_ancla_inversa_inferior arriba, vía interpolación
+        en la cota operativa (no en el extremo bruto de la tabla).
+        """
+        params = EMBALSES["Tomine"]
+        assert abs(CURVA_TOMINE.cota_max_m - params.cota_max_m) < 1e-9
+        assert abs(CURVA_TOMINE.volumen_max_mm3 - params.capacidad_max_mm3) < 1e-9
 
 
 # ---------------------------------------------------------------------------

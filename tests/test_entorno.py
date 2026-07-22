@@ -13,12 +13,22 @@ from __future__ import annotations
 
 import pytest
 
+from pbcrl.data_contracts.captaciones import (
+    CAUDAL_TIBITOC_AMPLIADO_M3S,
+    CAUDAL_TIBITOC_HISTORICO_M3S,
+    ESCENARIO_AMPLIADO,
+    ESCENARIO_HISTORICO,
+    caudal_tibitoc_nominal,
+)
+from pbcrl.data_contracts.caudal_ecologico import q_eco_m3s, umbral_fijo_m3s
 from pbcrl.data_contracts.embalses import EMBALSES, ParametrosEmbalse
 from pbcrl.environment.config import ConfigEntorno
 from pbcrl.environment.entorno import EntornoEmbalses, ForzantesExternos
 from pbcrl.data_contracts.curvas import volumen_a_cota
 from pbcrl.environment.hidraulica import (
     _M3S_A_MM3_DIA,
+    _MM_KM2_A_MM3,
+    calcular_extraccion_tibitoc,
     recortar_suministro,
 )
 from pbcrl.environment.penalizaciones import pen_descenso_nivel_sisga
@@ -27,13 +37,18 @@ from pbcrl.environment.penalizaciones import pen_descenso_nivel_sisga
 # Helpers de prueba
 # ---------------------------------------------------------------------------
 
-def _forzantes_neutros(q_natural: float = 1.0) -> ForzantesExternos:
-    """Forzantes con afluencia, lluvia y evaporación cero: solo el natural llega a El Sol."""
+def _forzantes_neutros(q_natural: float = 1.0, mes: int = 6) -> ForzantesExternos:
+    """Forzantes con afluencia, lluvia y evaporación cero: solo el natural llega a El Sol.
+
+    `mes` por defecto es junio (6), un mes cualquiera sin significado especial
+    para las pruebas que no dependen del umbral de caudal ecológico.
+    """
     return ForzantesExternos(
         afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
         precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
         evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
         caudal_natural_m3s=q_natural,
+        mes=mes,
     )
 
 
@@ -138,6 +153,7 @@ class TestBalanceMasa:
             precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
             evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
             caudal_natural_m3s=1.0,
+            mes=6,
         )
         resultado = env.step(_acciones_cero(), forzantes)
 
@@ -160,11 +176,49 @@ class TestBalanceMasa:
             precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
             evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
             caudal_natural_m3s=1.0,
+            mes=6,
         )
         resultado = env.step(_acciones_cero(), forzantes)
 
         assert resultado.vertimiento_m3s["Neusa"] > 0.0
         assert abs(resultado.estado.volumen_mm3["Neusa"] - params_neusa.capacidad_max_mm3) < 1e-9
+
+    def test_deficit_volumen_en_evaporacion_extrema(self):
+        """Si la evaporación supera el agua disponible cerca del mínimo (sequía
+        extrema), el volumen se acota al mínimo y el déficit de masa que el clamp
+        tuvo que cubrir queda reportado explícitamente en deficit_volumen_mm3, en
+        vez de perderse sin dejar rastro (ver hidraulica.paso_embalse)."""
+        env = EntornoEmbalses()
+        params_neusa = EMBALSES["Neusa"]
+        # Embalse casi vacío: solo 0.05 Mm³ sobre el volumen muerto.
+        agua_disponible = 0.05
+        v_ini = params_neusa.capacidad_min_mm3 + agua_disponible
+        env.reset(volumenes_iniciales_mm3={"Neusa": v_ini, "Sisga": 50.0, "Tomine": 400.0})
+
+        # Sin afluencia ni lluvia; evaporación en el techo de sanidad de schemas.py
+        # (20 mm/día) — no es un valor absurdo, es físicamente plausible.
+        forzantes = ForzantesExternos(
+            afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            evaporacion_mm={"Neusa": 20.0, "Sisga": 0.0, "Tomine": 0.0},
+            caudal_natural_m3s=1.0,
+            mes=6,
+        )
+        resultado = env.step(_acciones_cero(), forzantes)
+
+        # El volumen nunca baja del mínimo.
+        assert abs(resultado.estado.volumen_mm3["Neusa"] - params_neusa.capacidad_min_mm3) < 1e-9
+
+        # El déficit reportado es exactamente la evaporación que no pudo cubrirse
+        # con el agua disponible (evaporación total - agua que sí había).
+        evap_mm3 = 20.0 * params_neusa.area_espejo_km2 * _MM_KM2_A_MM3
+        deficit_esperado = evap_mm3 - agua_disponible
+        assert deficit_esperado > 0.0, "el escenario debe forzar el clamp inferior"
+        assert abs(resultado.deficit_volumen_mm3["Neusa"] - deficit_esperado) < 1e-9
+
+        # Los embalses sin estrés no reportan déficit.
+        assert resultado.deficit_volumen_mm3["Sisga"] == 0.0
+        assert resultado.deficit_volumen_mm3["Tomine"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +293,13 @@ class TestRecorteFisico:
 
 class TestViolacionEcologica:
     def _env_con_config(self, q_eco: float) -> EntornoEmbalses:
-        config = ConfigEntorno(q_eco_m3s=q_eco)
+        """Entorno con un umbral CONSTANTE (no el VMF mensual por defecto).
+
+        Usa `umbral_fijo_m3s`, el mecanismo documentado para revertir al
+        comportamiento anterior sin tocar `environment.entorno` — ver
+        `data_contracts.caudal_ecologico`.
+        """
+        config = ConfigEntorno(calcular_q_eco_m3s=umbral_fijo_m3s(q_eco))
         return EntornoEmbalses(config=config)
 
     def test_violacion_detectada(self):
@@ -258,23 +318,83 @@ class TestViolacionEcologica:
             forzantes=_forzantes_neutros(q_natural=1.0),  # 1 < 5
         )
         assert resultado.violacion_ecologica is True
+        assert abs(resultado.q_eco_aplicado_m3s - q_eco) < 1e-9
 
     def test_sin_violacion(self):
-        """Q_sol ≥ Q_eco no debe reportarse como violación."""
+        """Q_sol ≥ Q_eco no debe reportarse como violación.
+
+        El flujo debe superar Q_eco con holgura DESPUÉS de la extracción de
+        Tibitóc (escenario histórico por defecto, 4.5 m³/s), no antes.
+        """
         q_eco = 2.0
         env = self._env_con_config(q_eco)
         env.reset(volumenes_iniciales_mm3={
             "Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0
         })
-        # Suministro generoso + natural supera Q_eco con holgura
+        # Bocatoma = 3 (natural) + 5+3+5 (suministros) = 16; tras extraer 4.5 -> 11.5 > 2.
         resultado = env.step(
-            acciones_m3s={"Neusa": 2.0, "Sisga": 1.0, "Tomine": 1.0},
-            forzantes=_forzantes_neutros(q_natural=1.0),  # total ≥ 5 > 2
+            acciones_m3s={"Neusa": 5.0, "Sisga": 3.0, "Tomine": 5.0},
+            forzantes=_forzantes_neutros(q_natural=3.0),
         )
         assert resultado.violacion_ecologica is False
+        assert abs(resultado.q_eco_aplicado_m3s - q_eco) < 1e-9
 
-    def test_q_sol_coincide_con_suma(self):
-        """El caudal en El Sol es exactamente la suma de suministros + natural."""
+
+# ---------------------------------------------------------------------------
+# (d.2) Umbral VMF mensual por defecto (data_contracts.caudal_ecologico)
+# ---------------------------------------------------------------------------
+
+class TestUmbralVMFPorDefecto:
+    """El entorno, SIN configuración explícita, debe usar el umbral VMF del mes
+    (q_eco_m3s de data_contracts.caudal_ecologico), no un valor fijo."""
+
+    def _step_con_mes(self, env: EntornoEmbalses, q_natural: float, mes: int):
+        env.reset(volumenes_iniciales_mm3={
+            "Neusa": EMBALSES["Neusa"].capacidad_min_mm3,
+            "Sisga": EMBALSES["Sisga"].capacidad_min_mm3,
+            "Tomine": EMBALSES["Tomine"].capacidad_min_mm3,
+        })
+        return env.step(
+            acciones_m3s=_acciones_cero(),
+            forzantes=_forzantes_neutros(q_natural=q_natural, mes=mes),
+        )
+
+    def test_umbral_aplicado_coincide_con_q_eco_m3s(self):
+        """q_eco_aplicado_m3s debe ser exactamente q_eco_m3s(mes) para cada mes."""
+        env = EntornoEmbalses()
+        for mes in range(1, 13):
+            resultado = self._step_con_mes(env, q_natural=1.0, mes=mes)
+            assert abs(resultado.q_eco_aplicado_m3s - q_eco_m3s(mes)) < 1e-9
+
+    def test_mismo_caudal_distinta_violacion_segun_el_mes(self):
+        """Un mismo Q_sol puede violar en un mes de umbral alto (julio, EFR=7.51)
+        y no violar en un mes de umbral bajo (enero, EFR=2.32) — evidencia
+        directa de que el entorno usa el umbral correspondiente al mes, no un
+        valor fijo.
+
+        Con volúmenes al mínimo (suministro=0) y sin afluencia, Q_bocatoma =
+        caudal_natural_m3s; la extracción histórica (4.5 m³/s) se resta
+        siempre que Q_bocatoma la supere. Se fija caudal_natural_m3s para que
+        Q_sol resultante sea exactamente 5.0 m³/s (entre 2.32 y 7.51).
+        """
+        env = EntornoEmbalses()
+        q_sol_deseado = 5.0  # entre 2.32 (enero) y 7.51 (julio)
+        q_natural = q_sol_deseado + CAUDAL_TIBITOC_HISTORICO_M3S  # 9.5
+
+        resultado_enero = self._step_con_mes(env, q_natural=q_natural, mes=1)
+        resultado_julio = self._step_con_mes(env, q_natural=q_natural, mes=7)
+
+        assert abs(resultado_enero.estado.caudal_sol_m3s - q_sol_deseado) < 1e-9
+        assert abs(resultado_julio.estado.caudal_sol_m3s - q_sol_deseado) < 1e-9
+        assert resultado_enero.violacion_ecologica is False
+        assert resultado_julio.violacion_ecologica is True
+
+    def test_q_bocatoma_coincide_con_suma(self):
+        """Q_bocatoma es exactamente la suma de suministros + vertimientos + natural.
+
+        Q_bocatoma es el caudal disponible ANTES de la extracción de Tibitóc
+        (topología: Saucío -> Sisga -> Tominé -> Neusa -> bocatoma -> El Sol).
+        """
         env = EntornoEmbalses()
         env.reset(volumenes_iniciales_mm3={
             "Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0
@@ -284,7 +404,7 @@ class TestViolacionEcologica:
 
         resultado = env.step(acciones, _forzantes_neutros(q_natural=q_natural))
 
-        q_esperado = (
+        q_bocatoma_esperado = (
             q_natural
             + resultado.suministro_real_m3s["Neusa"]
             + resultado.suministro_real_m3s["Sisga"]
@@ -293,7 +413,23 @@ class TestViolacionEcologica:
             + resultado.vertimiento_m3s["Sisga"]
             + resultado.vertimiento_m3s["Tomine"]
         )
-        assert abs(resultado.estado.caudal_sol_m3s - q_esperado) < 1e-9
+        assert abs(resultado.estado.caudal_bocatoma_m3s - q_bocatoma_esperado) < 1e-9
+
+    def test_q_sol_es_bocatoma_menos_extraccion(self):
+        """Q_sol = Q_bocatoma - Q_extraccion, con la extracción acotada."""
+        env = EntornoEmbalses()
+        env.reset(volumenes_iniciales_mm3={
+            "Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0
+        })
+        q_natural = 3.0
+        acciones = {"Neusa": 2.0, "Sisga": 1.0, "Tomine": 1.5}
+
+        resultado = env.step(acciones, _forzantes_neutros(q_natural=q_natural))
+
+        q_bocatoma = resultado.estado.caudal_bocatoma_m3s
+        q_extraccion_esperada = min(CAUDAL_TIBITOC_HISTORICO_M3S, q_bocatoma)
+        assert abs(resultado.caudal_extraccion_m3s - q_extraccion_esperada) < 1e-9
+        assert abs(resultado.estado.caudal_sol_m3s - (q_bocatoma - q_extraccion_esperada)) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +453,7 @@ class TestRangoPenalizaciones:
                     precipitacion_mm={"Neusa": 5.0, "Sisga": 3.0, "Tomine": 4.0},
                     evaporacion_mm={"Neusa": 2.0, "Sisga": 1.0, "Tomine": 1.5},
                     caudal_natural_m3s=1.0,
+                    mes=6,
                 ),
             )
             for nombre, pen in resultado.penalizaciones.items():
@@ -372,3 +509,102 @@ class TestPenalizacionSisga:
         # Cota actual mayor que la anterior (ascenso)
         pen = pen_descenso_nivel_sisga(params.cota_min_m, params.cota_max_m, config)
         assert pen == 0.0
+
+
+# ---------------------------------------------------------------------------
+# (g) Cota física sobre la extracción de Tibitóc
+#
+# Topología: Saucío -> Sisga -> Tominé -> Neusa -> bocatoma (extracción) -> El Sol.
+# La extracción real nunca debe superar el caudal disponible en la bocatoma, y
+# por construcción Q_ElSol nunca debe ser negativo (ver data_contracts.captaciones).
+# ---------------------------------------------------------------------------
+
+class TestExtraccionTibitoc:
+    def test_escenarios_devuelven_los_valores_documentados(self):
+        assert caudal_tibitoc_nominal(ESCENARIO_HISTORICO) == CAUDAL_TIBITOC_HISTORICO_M3S
+        assert caudal_tibitoc_nominal(ESCENARIO_AMPLIADO) == CAUDAL_TIBITOC_AMPLIADO_M3S
+
+    def test_escenario_desconocido_lanza_error(self):
+        with pytest.raises(ValueError):
+            caudal_tibitoc_nominal("no_existe")
+
+    @pytest.mark.parametrize("bocatoma,nominal", [
+        (10.0, 4.5),   # bocatoma sobra: extraccion = nominal completo
+        (2.0, 4.5),    # bocatoma escasa: extraccion se acota al disponible
+        (0.0, 8.0),    # bocatoma seca: extraccion = 0
+        (10.0, 0.0),   # nominal nulo: extraccion = 0
+    ])
+    def test_extraccion_nunca_supera_lo_disponible(self, bocatoma, nominal):
+        """Q_extraccion = min(nominal, bocatoma), nunca mayor que la bocatoma."""
+        extraccion = calcular_extraccion_tibitoc(bocatoma, nominal)
+        assert extraccion <= bocatoma + 1e-9
+        assert extraccion <= nominal + 1e-9
+        assert extraccion >= 0.0
+
+    def test_q_sol_nunca_negativo_en_el_entorno(self):
+        """Con bocatoma menor que el nominal, Q_sol se acota a 0, nunca negativo."""
+        env = EntornoEmbalses()
+        # Volumenes minimos: suministro=0; sin afluencia: vertimiento=0.
+        env.reset(volumenes_iniciales_mm3={
+            "Neusa": EMBALSES["Neusa"].capacidad_min_mm3,
+            "Sisga": EMBALSES["Sisga"].capacidad_min_mm3,
+            "Tomine": EMBALSES["Tomine"].capacidad_min_mm3,
+        })
+        forzantes = ForzantesExternos(
+            afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            caudal_natural_m3s=1.0,  # bocatoma = 1.0 m3/s
+            mes=6,
+            caudal_tibitoc_m3s=CAUDAL_TIBITOC_AMPLIADO_M3S,  # nominal = 8.0 > bocatoma
+        )
+        resultado = env.step(_acciones_cero(), forzantes)
+
+        assert resultado.estado.caudal_sol_m3s >= 0.0
+        assert abs(resultado.estado.caudal_sol_m3s - 0.0) < 1e-9
+        assert resultado.cota_fisica_activada is True
+        assert abs(resultado.caudal_extraccion_m3s - resultado.estado.caudal_bocatoma_m3s) < 1e-9
+        assert abs(resultado.deficit_extraccion_m3s - (8.0 - resultado.estado.caudal_bocatoma_m3s)) < 1e-9
+
+    def test_cota_no_activada_cuando_bocatoma_sobra(self):
+        """Con bocatoma mayor que el nominal, la extraccion es el nominal completo."""
+        env = EntornoEmbalses()
+        env.reset(volumenes_iniciales_mm3={
+            "Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0
+        })
+        forzantes = ForzantesExternos(
+            afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            caudal_natural_m3s=20.0,
+            mes=6,
+            caudal_tibitoc_m3s=CAUDAL_TIBITOC_HISTORICO_M3S,
+        )
+        resultado = env.step(_acciones_cero(), forzantes)
+
+        assert resultado.cota_fisica_activada is False
+        assert abs(resultado.caudal_extraccion_m3s - CAUDAL_TIBITOC_HISTORICO_M3S) < 1e-9
+        assert abs(resultado.deficit_extraccion_m3s - 0.0) < 1e-9
+
+    @pytest.mark.parametrize("q_natural", [0.0, 0.5, 1.0, 3.0, 4.5, 4.999, 5.0, 8.0, 20.0])
+    def test_q_sol_nunca_negativo_barrido(self, q_natural):
+        """Barrido de caudales de bocatoma: Q_sol nunca negativo, para ambos escenarios."""
+        for escenario in (ESCENARIO_HISTORICO, ESCENARIO_AMPLIADO):
+            env = EntornoEmbalses()
+            env.reset(volumenes_iniciales_mm3={
+                "Neusa": EMBALSES["Neusa"].capacidad_min_mm3,
+                "Sisga": EMBALSES["Sisga"].capacidad_min_mm3,
+                "Tomine": EMBALSES["Tomine"].capacidad_min_mm3,
+            })
+            forzantes = ForzantesExternos(
+                afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+                precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+                evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+                caudal_natural_m3s=q_natural,
+                mes=6,
+                caudal_tibitoc_m3s=caudal_tibitoc_nominal(escenario),
+            )
+            resultado = env.step(_acciones_cero(), forzantes)
+            assert resultado.estado.caudal_sol_m3s >= -1e-9, (
+                f"Q_sol negativo con escenario={escenario}, q_natural={q_natural}"
+            )

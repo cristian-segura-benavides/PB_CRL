@@ -8,6 +8,9 @@ antes de usarlos en experimentos formales.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
+
+from pbcrl.data_contracts.caudal_ecologico import q_eco_m3s as _calcular_q_eco_vmf
 
 
 @dataclass
@@ -16,9 +19,16 @@ class ConfigEntorno:
 
     Atributos
     ---------
-    q_eco_m3s : float
-        Caudal ecológico mínimo requerido en el punto de control El Sol [m³/s].
-        PROVISIONAL: valor inicial de referencia.
+    calcular_q_eco_m3s : Callable[[int], float]
+        Función que devuelve el caudal ecológico mínimo requerido en el punto
+        de control El Sol [m³/s], dado el mes calendario (1-12) del paso
+        actual. Por defecto usa el umbral VMF fijado en
+        `data_contracts.caudal_ecologico.q_eco_m3s` (ver ese módulo para el
+        método, el origen de los datos y las salvedades documentadas).
+        Configurable sin tocar el resto del entorno: para un umbral fijo, usar
+        `data_contracts.caudal_ecologico.umbral_fijo_m3s(valor)`; para otro
+        método (normativo, Q95, Tennant), pasar cualquier `Callable[[int],
+        float]` equivalente.
 
     sisga_descenso_umbral_cm : float
         Rata de descenso de nivel del Sisga sin penalización [cm/día].
@@ -39,7 +49,7 @@ class ConfigEntorno:
     """
 
     # --- Caudal ecológico ---
-    q_eco_m3s: float = 2.0                    # PROVISIONAL
+    calcular_q_eco_m3s: Callable[[int], float] = _calcular_q_eco_vmf
 
     # --- Penalización Sisga: rata de descenso de nivel ---
     # Fuente umbrales: Manual de Operación Embalse del Sisga, CAR.

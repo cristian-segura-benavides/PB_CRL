@@ -6,9 +6,19 @@ Flujo de un paso de simulación
 1. El agente proporciona los caudales suministrados por cada embalse (acciones).
 2. El entorno recorta las acciones a lo físicamente posible (recortar_suministro).
 3. El entorno aplica el balance hídrico hacia adelante en cada embalse (paso_embalse).
-4. Se calcula el caudal total en El Sol:
-       Q_sol = Σ(suministro_real + vertimiento) de los tres embalses + Q_natural
-5. Se detecta si se viola el caudal ecológico mínimo (Q_sol < Q_eco).
+4. Se calcula el caudal en la bocatoma de Tibitóc y el caudal en El Sol, según la
+   topología confirmada (ver data_contracts.captaciones):
+       Saucío -> Sisga -> Tominé -> Neusa -> bocatoma (extracción) -> El Sol
+       Q_bocatoma  = Q_natural (Saucío) + Σ(suministro_real + vertimiento) de los
+                     tres embalses
+       Q_extraccion = min(Q_Tibitoc_nominal, Q_bocatoma)   # cota física
+       Q_sol        = Q_bocatoma - Q_extraccion             # siempre >= 0
+   Q_Tibitoc_nominal viene de ForzantesExternos.caudal_tibitoc_m3s (constante de
+   escenario por defecto, o serie real día a día si se obtiene).
+5. Se detecta si se viola el caudal ecológico mínimo (Q_sol < Q_eco(mes)), con
+   Q_eco dado por ConfigEntorno.calcular_q_eco_m3s (por defecto, el umbral VMF
+   mensual de data_contracts.caudal_ecologico — ver ese módulo para el método
+   y las salvedades documentadas).
 6. Se calculan las penalizaciones por embalse.
 7. Se devuelve el nuevo estado, las penalizaciones, y un dict de información adicional.
 
@@ -19,10 +29,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pbcrl.data_contracts.captaciones import CAUDAL_TIBITOC_HISTORICO_M3S
 from pbcrl.data_contracts.curvas import volumen_a_cota
 from pbcrl.data_contracts.embalses import EMBALSES, ParametrosEmbalse
 from pbcrl.environment.config import ConfigEntorno
 from pbcrl.environment.hidraulica import (
+    calcular_extraccion_tibitoc,
     paso_embalse,
     recortar_suministro,
 )
@@ -50,15 +62,19 @@ class EstadoSistema:
     cota_m : dict[str, float]
         Cota de cada embalse [m.s.n.m.]. Derivada del volumen con curva lineal (PROVISIONAL).
     caudal_natural_m3s : float
-        Caudal natural en El Sol (proveniente de la cuenca sin regulación) [m³/s].
-        En datos reales corresponde a la estación Saucío.
+        Caudal natural aportado por Saucío [m³/s]. Primer término de la bocatoma.
+    caudal_bocatoma_m3s : float
+        Caudal disponible en la bocatoma de Tibitóc, ANTES de la extracción [m³/s]:
+        Saucío + descargas (suministro real + vertimiento) de Sisga, Tominé y Neusa.
     caudal_sol_m3s : float
-        Caudal total en el punto de control El Sol [m³/s].
+        Caudal en el punto de control El Sol [m³/s]: caudal_bocatoma_m3s menos la
+        extracción real de Tibitóc (acotada por el caudal disponible). Nunca negativo.
     """
 
     volumen_mm3: dict[str, float]
     cota_m: dict[str, float]
     caudal_natural_m3s: float
+    caudal_bocatoma_m3s: float
     caudal_sol_m3s: float
 
 
@@ -78,13 +94,30 @@ class ForzantesExternos:
     evaporacion_mm : dict[str, float]
         Evaporación sobre el espejo de cada embalse [mm/día].
     caudal_natural_m3s : float
-        Caudal natural (no regulado) en El Sol [m³/s]. Estación Saucío en datos reales.
+        Caudal natural (no regulado) que llega a la bocatoma [m³/s]. Estación
+        Saucío en datos reales.
+    mes : int
+        Mes calendario del paso actual (1-12). Determina el umbral de caudal
+        ecológico aplicado (ver ConfigEntorno.calcular_q_eco_m3s — por
+        defecto, el VMF mensual de data_contracts.caudal_ecologico). Requerido
+        explícitamente (sin valor por defecto) para evitar evaluar la
+        violación ecológica contra el mes equivocado por un descuido silencioso.
+    caudal_tibitoc_m3s : float
+        Caudal NOMINAL que la Planta de Tibitóc busca captar en este paso [m³/s]
+        (ver data_contracts.captaciones). La extracción real se acota por el
+        caudal disponible en la bocatoma (nunca deja a El Sol en negativo).
+        Por defecto usa el escenario HISTÓRICO (4.5 m³/s constante); para el
+        escenario AMPLIADO u otro, pasar
+        ``data_contracts.captaciones.caudal_tibitoc_nominal(escenario)``, o una
+        serie real día a día si se obtiene — no requiere cambios en el entorno.
     """
 
     afluencia_m3s: dict[str, float]
     precipitacion_mm: dict[str, float]
     evaporacion_mm: dict[str, float]
     caudal_natural_m3s: float
+    mes: int
+    caudal_tibitoc_m3s: float = CAUDAL_TIBITOC_HISTORICO_M3S
 
 
 @dataclass
@@ -102,7 +135,30 @@ class ResultadoPaso:
     vertimiento_m3s : dict[str, float]
         Caudal vertido por el aliviadero de cada embalse [m³/s].
     violacion_ecologica : bool
-        True si el caudal en El Sol es inferior al caudal ecológico mínimo.
+        True si el caudal en El Sol es inferior al caudal ecológico mínimo del
+        mes (ver q_eco_aplicado_m3s).
+    q_eco_aplicado_m3s : float
+        Umbral de caudal ecológico efectivamente usado en este paso [m³/s]
+        (ConfigEntorno.calcular_q_eco_m3s aplicado al mes de ForzantesExternos).
+        Se reporta explícitamente para que sea auditable sin recalcularlo.
+    caudal_extraccion_m3s : float
+        Extracción REAL de Tibitóc en este paso [m³/s]: min(caudal nominal del
+        escenario/serie, caudal disponible en la bocatoma). Nunca supera el
+        caudal disponible.
+    cota_fisica_activada : bool
+        True si el caudal disponible en la bocatoma fue menor que el caudal
+        nominal solicitado (la planta no pudo captar su caudal nominal completo).
+    deficit_extraccion_m3s : float
+        caudal_tibitoc_m3s (nominal) - caudal_extraccion_m3s (real) en este paso.
+        Cero cuando la cota física no se activa. Para reportar el "déficit medio"
+        de un escenario, promediar este campo (o solo sobre los pasos con
+        cota_fisica_activada=True) a lo largo de una corrida.
+    deficit_volumen_mm3 : dict[str, float]
+        Masa "conjurada" por embalse al activarse el clamp inferior de volumen en
+        `paso_embalse` (evaporación mayor al agua disponible cerca del volumen
+        muerto) [Mm³]. Cero en condiciones normales. NO es una entrada física real;
+        es la magnitud del ajuste. Acumulable a lo largo de una corrida para medir
+        cuánta masa fue "perdonada" por el clamp (ver hidraulica.paso_embalse).
     """
 
     estado: EstadoSistema
@@ -110,6 +166,11 @@ class ResultadoPaso:
     suministro_real_m3s: dict[str, float]
     vertimiento_m3s: dict[str, float]
     violacion_ecologica: bool
+    q_eco_aplicado_m3s: float
+    caudal_extraccion_m3s: float
+    cota_fisica_activada: bool
+    deficit_extraccion_m3s: float
+    deficit_volumen_mm3: dict[str, float]
 
 
 # ---------------------------------------------------------------------------
@@ -190,10 +251,12 @@ class EntornoEmbalses:
 
         self._cota_anterior_m = dict(cotas)
 
+        # Simplificación de reset (sin extracción/descargas aún): bocatoma = El Sol = natural.
         self._estado = EstadoSistema(
             volumen_mm3=dict(volumenes_iniciales_mm3),
             cota_m=cotas,
             caudal_natural_m3s=caudal_natural_inicial_m3s,
+            caudal_bocatoma_m3s=caudal_natural_inicial_m3s,
             caudal_sol_m3s=caudal_natural_inicial_m3s,
         )
         return self._estado
@@ -234,6 +297,7 @@ class EntornoEmbalses:
         nuevos_volumenes: dict[str, float] = {}
         suministro_real: dict[str, float] = {}
         vertimiento_mm3: dict[str, float] = {}
+        deficit_volumen_mm3: dict[str, float] = {}
 
         # --- Paso hidráulico para cada embalse ---
         for nombre, params in self.embalses.items():
@@ -248,7 +312,7 @@ class EntornoEmbalses:
             suministro_real[nombre] = q_real
 
             # 2. Aplicar balance hídrico hacia adelante
-            v_nuevo, vert_mm3 = paso_embalse(
+            v_nuevo, vert_mm3, deficit_mm3 = paso_embalse(
                 volumen_actual_mm3=vol_actual,
                 afluencia_m3s=forzantes.afluencia_m3s.get(nombre, 0.0),
                 suministro_m3s=q_real,
@@ -258,6 +322,7 @@ class EntornoEmbalses:
             )
             nuevos_volumenes[nombre] = v_nuevo
             vertimiento_mm3[nombre] = vert_mm3
+            deficit_volumen_mm3[nombre] = deficit_mm3
 
         # --- Nuevas cotas ---
         nuevas_cotas = {
@@ -265,18 +330,31 @@ class EntornoEmbalses:
             for nombre, vol in nuevos_volumenes.items()
         }
 
-        # --- Caudal en El Sol ---
-        # Q_sol = Σ(suministro_real + vertimiento_m3s) para cada embalse + Q_natural
-        # Factor de conversión de vertimiento: Mm³/día → m³/s
+        # --- Caudal en la bocatoma de Tibitóc (antes de la extracción) ---
+        # Topología: Saucío -> Sisga -> Tominé -> Neusa -> bocatoma (extracción) -> El Sol.
+        # Q_bocatoma = Q_natural (Saucío) + Σ(suministro_real + vertimiento) de los tres
+        # embalses. Factor de conversión de vertimiento: Mm³/día → m³/s.
         _MM3_DIA_A_M3S = 1e6 / 86_400.0
 
-        q_sol = forzantes.caudal_natural_m3s
+        q_bocatoma = forzantes.caudal_natural_m3s
         for nombre in self.embalses:
-            q_sol += suministro_real[nombre]
-            q_sol += vertimiento_mm3[nombre] * _MM3_DIA_A_M3S
+            q_bocatoma += suministro_real[nombre]
+            q_bocatoma += vertimiento_mm3[nombre] * _MM3_DIA_A_M3S
+
+        # --- Extracción de Tibitóc, acotada por el caudal disponible ---
+        # La planta no puede captar más agua de la que el río trae en la bocatoma;
+        # esta cota es la que garantiza Q_sol >= 0 (ver data_contracts.captaciones).
+        q_extraccion = calcular_extraccion_tibitoc(q_bocatoma, forzantes.caudal_tibitoc_m3s)
+        cota_activada = q_bocatoma < forzantes.caudal_tibitoc_m3s
+        deficit_extraccion = forzantes.caudal_tibitoc_m3s - q_extraccion
+
+        # --- Caudal en El Sol ---
+        q_sol = q_bocatoma - q_extraccion
 
         # --- Detección de violación del caudal ecológico ---
-        violacion = q_sol < self.config.q_eco_m3s
+        # Umbral dependiente del mes (por defecto, VMF — ver data_contracts.caudal_ecologico).
+        q_eco = self.config.calcular_q_eco_m3s(forzantes.mes)
+        violacion = q_sol < q_eco
 
         # --- Penalizaciones ---
         penalizaciones: dict[str, float] = {}
@@ -308,6 +386,7 @@ class EntornoEmbalses:
             volumen_mm3=nuevos_volumenes,
             cota_m=nuevas_cotas,
             caudal_natural_m3s=forzantes.caudal_natural_m3s,
+            caudal_bocatoma_m3s=q_bocatoma,
             caudal_sol_m3s=q_sol,
         )
 
@@ -322,4 +401,9 @@ class EntornoEmbalses:
             suministro_real_m3s=suministro_real,
             vertimiento_m3s=vertimiento_m3s,
             violacion_ecologica=violacion,
+            q_eco_aplicado_m3s=q_eco,
+            caudal_extraccion_m3s=q_extraccion,
+            cota_fisica_activada=cota_activada,
+            deficit_extraccion_m3s=deficit_extraccion,
+            deficit_volumen_mm3=deficit_volumen_mm3,
         )

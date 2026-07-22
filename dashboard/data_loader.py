@@ -36,6 +36,7 @@ from pbcrl.data_contracts.embalses import (
     VOLUMEN_MUERTO_MM3,
     ParametrosEmbalse,
 )
+from pbcrl.data_contracts.ventana import VENTANA_FIN_TS, VENTANA_INICIO_TS
 from pbcrl.data_ingest.tomine import cargar_tomine
 from pbcrl.hydrology.balance import calcular_afluencia
 
@@ -344,6 +345,12 @@ def _clamp_negative_afluence(series: pd.Series, warning_threshold_m3s: float) ->
 
 
 def _build_raw_reservoir_frame(name: str) -> pd.DataFrame:
+    """Construye el frame crudo de Neusa/Sisga, recortado a la ventana unica del proyecto.
+
+    La ventana (VENTANA_INICIO_TS, VENTANA_FIN_TS) es la misma para los tres embalses
+    (ver pbcrl.data_contracts.ventana); se aplica aqui reindexando directamente sobre
+    ese rango fijo, en vez de usar el min/max propio de la fuente.
+    """
     volume_source = _read_volume_source()
     evaporation_source = _read_evaporation_source()
 
@@ -352,7 +359,7 @@ def _build_raw_reservoir_frame(name: str) -> pd.DataFrame:
         return pd.DataFrame(index=pd.DatetimeIndex([], name="fecha"))
 
     reservoir = reservoir.set_index("fecha").sort_index()
-    full_index = pd.date_range(reservoir.index.min(), reservoir.index.max(), freq="D")
+    full_index = pd.date_range(VENTANA_INICIO_TS, VENTANA_FIN_TS, freq="D")
     reservoir = reservoir.reindex(full_index)
     reservoir.index.name = "fecha"
 
@@ -584,60 +591,6 @@ def load_dashboard_context(
     return contexts, pd.Timestamp(date_min), pd.Timestamp(date_max)
 
 
-def diagnostics_report_table(contexts: dict[str, ReservoirContext]) -> pd.DataFrame:
-    """Devuelve un reporte tabular de diagnostico antes y despues de la limpieza."""
-    rows: list[dict[str, object]] = []
-    for name in ["Neusa", "Sisga"]:
-        diagnostics = contexts[name].diagnostics
-        rows.extend(
-            [
-                {
-                    "embalse": name,
-                    "etapa": "crudo",
-                    "dias_negativos": diagnostics.raw_negative_days,
-                    "pct_negativos": diagnostics.raw_negative_pct,
-                    "min_negativo_m3s": diagnostics.raw_negative_min_m3s,
-                    "media_negativa_m3s": diagnostics.raw_negative_mean_m3s,
-                    "mediana_negativa_m3s": diagnostics.raw_negative_median_m3s,
-                    "p90_abs_negativo_m3s": diagnostics.raw_negative_p90_abs_m3s,
-                    "saltos_volumen_corregidos": diagnostics.volume_jump_days,
-                    "umbral_salto_volumen_mm3": diagnostics.volume_jump_threshold_mm3,
-                    "negativos_acotados": 0,
-                    "advertencias_acotadas": 0,
-                },
-                {
-                    "embalse": name,
-                    "etapa": "tras_capa1",
-                    "dias_negativos": diagnostics.after_layer1_negative_days,
-                    "pct_negativos": diagnostics.after_layer1_negative_pct,
-                    "min_negativo_m3s": diagnostics.after_layer1_negative_min_m3s,
-                    "media_negativa_m3s": diagnostics.after_layer1_negative_mean_m3s,
-                    "mediana_negativa_m3s": diagnostics.after_layer1_negative_median_m3s,
-                    "p90_abs_negativo_m3s": diagnostics.after_layer1_negative_p90_abs_m3s,
-                    "saltos_volumen_corregidos": diagnostics.volume_jump_days,
-                    "umbral_salto_volumen_mm3": diagnostics.volume_jump_threshold_mm3,
-                    "negativos_acotados": 0,
-                    "advertencias_acotadas": 0,
-                },
-                {
-                    "embalse": name,
-                    "etapa": "final",
-                    "dias_negativos": diagnostics.final_negative_days,
-                    "pct_negativos": diagnostics.final_negative_pct,
-                    "min_negativo_m3s": None,
-                    "media_negativa_m3s": None,
-                    "mediana_negativa_m3s": None,
-                    "p90_abs_negativo_m3s": None,
-                    "saltos_volumen_corregidos": diagnostics.volume_jump_days,
-                    "umbral_salto_volumen_mm3": diagnostics.volume_jump_threshold_mm3,
-                    "negativos_acotados": diagnostics.clamped_negative_days,
-                    "advertencias_acotadas": diagnostics.clamped_negative_warning_days,
-                },
-            ]
-        )
-    return pd.DataFrame(rows)
-
-
 def operational_limits_table() -> pd.DataFrame:
     rows = []
     for name, params in EMBALSES.items():
@@ -651,15 +604,3 @@ def operational_limits_table() -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
-
-
-def diagnostics_note(contexts: dict[str, ReservoirContext]) -> str:
-    """Nota breve visible para mostrar cuantos dias fueron corregidos/acotados."""
-    parts = []
-    for name in ["Neusa", "Sisga"]:
-        diag = contexts[name].diagnostics
-        parts.append(
-            f"{name}: Capa 1 corrigio {diag.volume_jump_days} saltos; Capa 2 acoto {diag.clamped_negative_days} dias negativos"
-            f" ({diag.clamped_negative_warning_days} por encima del umbral de advertencia)."
-        )
-    return " ".join(parts)

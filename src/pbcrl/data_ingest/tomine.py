@@ -5,14 +5,22 @@ ventana de análisis, corrige los problemas detectados en la auditoría y traduc
 columnas al contrato de datos del proyecto (``data_contracts.ESQUEMA_EMBALSE``),
 añadiendo la columna de bombeo.
 
-Correcciones aplicadas (auditoría 2015-2025)
---------------------------------------------
+Correcciones aplicadas (ventana unificada del proyecto, ver data_contracts.ventana)
+------------------------------------------------------------------------------------
 1. Fechas duplicadas exactas (2021-11-15 y 2023-01-01): se conserva una sola fila.
 2. Detección de saltos anómalos de volumen: se marcan los días cuyo cambio diario
    supera ``volume_jump_fraction`` de la capacidad total y se corrigen por
-   interpolación temporal. El único salto conocido (2012-01-01) queda fuera de la
-   ventana 2015-2025; la detección se conserva por robustez.
+   interpolación temporal. El salto real conocido del 2012-01-01 (caída de ~138 Mm³
+   en un día) queda FUERA del alcance de esta detección con la ventana actual: al
+   arrancar la ventana exactamente el 2012-01-01, la transición anómala (que ocurría
+   entre el 2011-12-31 y el 2012-01-01) queda excluida por definición, y la serie
+   que permanece dentro de la ventana es internamente consistente desde su primer
+   día. La detección se conserva por robustez ante datos futuros.
 3. NaN de bombeo: se tratan como cero (el bombeo es un evento poco frecuente).
+
+Ventana de análisis: VENTANA_INICIO/VENTANA_FIN se importan de
+``pbcrl.data_contracts.ventana`` (fuente única para los tres embalses; ver ese módulo
+para la justificación de cada borde). No se hardcodean fechas en este archivo.
 
 Notas de datos
 --------------
@@ -22,24 +30,34 @@ Notas de datos
   muerto, a diferencia de Neusa/Sisga (CAR, en total). No requiere conversión.
 - Evaporación: el Excel de Enlaza NO reporta evaporación para Tominé. Se toma de la
   serie ERA5-Land (flujo de calor latente), archivo
-  ``info_CAR/Serie_Evaporacion_Tomine_2010_2025_CORRECTA.csv``, validada en magnitud
-  (~3.19 mm/día, ~1164 mm/año, coherente con la evaporación medida de los embalses
-  vecinos de la CAR). Se alinea a la ventana diaria del loader.
+  ``info_CAR/Serie_Evaporacion_Tomine_2009_2025.csv``, validada en magnitud
+  (~3.19 mm/día, ~1164 mm/año, coherente en ORDEN DE MAGNITUD con la evaporación
+  medida de los embalses vecinos de la CAR). Es una extensión de la serie anterior
+  (2010-2025): idéntica en el período que se solapa, extendida un año hacia atrás.
+  Se alinea a la ventana diaria del loader.
+  DIFERENCIA SISTEMÁTICA (no solo ruido): la media de Tominé (~3.21 mm/día) es
+  42-64% más alta que la medida en Neusa (~1.96 mm/día) y Sisga (~2.25 mm/día).
+  Explicación física plausible: Tominé opera a menor altitud (cota ~2567-2598 m)
+  que Neusa (~2950-2974 m) y Sisga (~2644-2670 m); menor altitud implica mayor
+  temperatura en la sabana de Bogotá, y por tanto mayor evaporación potencial —
+  la diferencia es ESPERABLE por el gradiente altitudinal, no necesariamente un
+  error del dato ERA5. Esta explicación NO ha sido validada contra medición
+  directa en Tominé: Enlaza confirmó por escrito (radicado ENL-002443-2026-S,
+  ver más abajo) que Tominé no cuenta con evaporímetro propio, así que no existe
+  serie medida en sitio contra la cual contrastar esta hipótesis.
 - Bombeo: 'Bombeo (m3)' es el volumen diario bombeado desde el canal Achury hacia el
   embalse. Se convierte de m³/día a Mm³/día (``bombeo_mm3``) para ser coherente con
   ``volumen_mm3``. Es un aporte (entrada), no una descarga.
-- Ceros de descarga: en 2015-2025 son días reales sin descarga; NO se interpolan.
+- Ceros de descarga: son días reales sin descarga; NO se interpolan.
 
-ADVERTENCIA — el balance hídrico de Tominé todavía NO debe ejecutarse
---------------------------------------------------------------------
-Aunque la evaporación ya es real (ERA5), quedan DOS pendientes antes de correr el
-balance inverso para Tominé, so pena de obtener afluencias falsas:
-  1. Incluir el término de BOMBEO en el balance (Tominé recibe agua bombeada desde el
-     canal Achury; el balance actual de Neusa/Sisga no contempla ese aporte).
-  2. Confirmar con el asesor la CONVENCIÓN DE VOLUMEN (útil vs total): la serie de
-     Tominé está en "útil" y difiere de embalses.py/curvas.py ("total") en el volumen
-     muerto (9.90 Mm³). Ver notas de memoria del proyecto.
-Este loader solo prepara y valida la serie; NO ejecuta el balance.
+Estado del balance hídrico de Tominé
+-------------------------------------
+Los dos bloqueos que impedían correr el balance inverso para Tominé ya se resolvieron:
+el término de BOMBEO está implementado en ``hydrology.balance`` (parámetro opcional,
+solo Tominé lo usa) y la CONVENCIÓN DE VOLUMEN (útil) quedó confirmada con el asesor
+para los tres embalses. El tablero (``dashboard/data_loader._build_tomine_context``)
+ya calcula la afluencia de Tominé con este loader, pasando el bombeo al balance. Este
+módulo solo carga y valida la serie; no ejecuta el balance por sí mismo.
 """
 from __future__ import annotations
 
@@ -49,15 +67,13 @@ from pathlib import Path
 import pandas as pd
 
 from pbcrl.data_contracts import EMBALSES, validar_dataframe_embalse
+from pbcrl.data_contracts.ventana import VENTANA_FIN, VENTANA_INICIO
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 DEFAULT_TOMINE_XLSX = ROOT_DIR / "info_CAR" / "datos operativos Tomine_Enlaza.xlsx"
-DEFAULT_TOMINE_EVAP_CSV = ROOT_DIR / "info_CAR" / "Serie_Evaporacion_Tomine_2010_2025_CORRECTA.csv"
+DEFAULT_TOMINE_EVAP_CSV = ROOT_DIR / "info_CAR" / "Serie_Evaporacion_Tomine_2009_2025.csv"
 TOMINE_SHEET = "Tomine"
 EVAP_FUENTE = "ERA5-Land (flujo de calor latente)"
-
-VENTANA_INICIO = "2015-01-01"
-VENTANA_FIN = "2025-12-31"
 
 DEFAULT_VOLUME_JUMP_FRACTION = 0.10
 
@@ -116,7 +132,8 @@ def _corregir_saltos_volumen(volumen: pd.Series, umbral_mm3: float) -> tuple[pd.
 def _cargar_evaporacion_era5(ruta_csv: str | Path, indice: pd.DatetimeIndex) -> tuple[pd.Series, int]:
     """Carga la evaporación ERA5 (mm/día) y la alinea al índice diario del loader.
 
-    El CSV cubre 2010-2025 con columnas 'fecha' y 'evap_mm'. Se reindexa a ``indice``
+    El CSV cubre 2009-2025 con columnas 'fecha' y 'evap_mm' (más años de los que usa la
+    ventana actual del proyecto). Se reindexa a ``indice``
     y se rellena cualquier día faltante por interpolación temporal (y ffill/bfill en los
     bordes; p.ej. falta 2025-12-31). Devuelve la serie alineada y cuántos días se
     rellenaron dentro de la ventana.
@@ -205,7 +222,8 @@ def cargar_tomine(
             + (" ..." if len(fechas_hueco) > 10 else "")
         )
 
-    # 2. Saltos anómalos de volumen (0 esperados en 2015-2025).
+    # 2. Saltos anómalos de volumen (0 esperados con la ventana 2012-2025: el salto
+    #    real del 2012-01-01 queda fuera del alcance de esta deteccion, ver docstring).
     umbral_salto = volume_jump_fraction * EMBALSES["Tomine"].capacidad_max_mm3
     df["volumen_mm3"], saltos = _corregir_saltos_volumen(df["volumen_mm3"], umbral_salto)
 
@@ -246,7 +264,7 @@ def cargar_tomine(
 def resumen_tomine(df: pd.DataFrame, diagnostico: DiagnosticoTomine) -> str:
     """Devuelve un resumen legible de la serie cargada para verificación rápida."""
     lineas = [
-        "=== Serie operativa de Tominé (2015-2025) ===",
+        "=== Serie operativa de Tominé ===",
         f"Rango: {diagnostico.rango_inicio.date()} -> {diagnostico.rango_fin.date()}",
         f"Días (índice diario continuo): {diagnostico.dias_resultado}",
         f"Filas crudas en ventana: {diagnostico.filas_ventana_crudas}",
@@ -260,8 +278,5 @@ def resumen_tomine(df: pd.DataFrame, diagnostico: DiagnosticoTomine) -> str:
         "",
         "Estadísticas básicas:",
         df.describe().round(3).to_string(),
-        "",
-        "ADVERTENCIA: el balance de Tominé NO debe correrse aún (falta el término de "
-        "bombeo y confirmar la convención de volumen). Ver docstring del módulo.",
     ]
     return "\n".join(lineas)
