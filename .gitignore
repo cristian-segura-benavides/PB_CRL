@@ -28,6 +28,10 @@ info_CAR/
 *.parquet
 *.pdf
 
+# Modelos entrenados (derivados de datos reales, no son codigo)
+*.npz
+src/pbcrl/stochastic/artefactos/
+
 # IDEs
 .vscode/
 .idea/

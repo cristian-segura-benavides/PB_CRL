@@ -89,9 +89,12 @@ pruebas pasan (core del modelo). El tablero es módulo aparte del core.
 
 Shield de proyección cuadrática (contribución central). PENDIENTE reunión Sebastian.
 Agente de RL. PENDIENTE reunión.
-Modelo estocástico multivariado de afluencias (fase 1 de Sebastian): un modelo,
-4 salidas (Saucío + afluencias Neusa/Sisga/Tominé), covariables precip/temp/RONI.
-RONI ya integrado como covariable diaria (data_ingest/roni.py); falta el modelo en sí.
+Modelo estocástico multivariado de afluencias: CONSTRUIDO v1 y ACEPTADO para el
+entregable (2026-07-22), aislado en src/pbcrl/stochastic/ (no conectado al entorno
+todavía). VARX desestacionalizado + hurdle, entrenado con precipitación y RONI
+(temperatura excluida por decisión, ver 4g). Validado con 5 bloques temporales;
+limitaciones documentadas en 4g y en stochastic/README.md — leer antes de conectarlo
+al entorno o de refinarlo.
 Integrar datos reales al entorno: reemplazar sintético por las series de la CAR.
 
 
@@ -325,6 +328,67 @@ PENDIENTE PARA EL ASESOR: validar la decisión de incluir el evento de Neusa
 CAR). Scripts fuente en scratch_vmf/ (calcular_vmf_v2.py, cálculo del umbral;
 calcular_vmf_v3_validacion.py, las tres piezas de cierre: validación
 estacional, sensibilidad, verificación del caveat de Neusa 2022).
+
+
+4g. Modelo estocástico de afluencias — v1 ACEPTADO para el entregable (2026-07-22)
+
+
+MÓDULO: src/pbcrl/stochastic/ (modelo.py, analogos.py, entrenamiento.py, README.md).
+AISLADO del resto del proyecto — no toca hydrology/balance.py ni environment/entorno.py;
+conectarlo al entorno es un paso posterior, aún no hecho.
+
+MÉTODO: VARX desestacionalizado con componente hurdle (separa la probabilidad de
+estado bajo — artefacto de limpieza del balance inverso, no sequía real — del valor
+continuo condicional), entrenado con precipitación (promedio de los tres pluviómetros,
+proxy de cuenca) y RONI. Temperatura EXCLUIDA por decisión (2026-07-22): no existe en
+el proyecto (no hay loader ni fuente integrada, pese a la nota de "eventual pipeline
+GEE" en ventana.py) y su efecto es de segundo orden (evapotranspiración) frente a
+precipitación y ENSO. El modelo queda preparado para agregarla después con el mismo
+patrón de configuración por escenario usado en captaciones.py (agregar el nombre de
+columna a ConfigModeloEstocastico.covariables, sin tocar la lógica).
+Línea base de validación: remuestreo por análogos (analogos.py) — NO es el método
+final, solo confirma que el VARX no se aleja del comportamiento observado.
+
+VALIDACIÓN: primero un split simple (últimos 2 años), que mostró sobreestimación
+sistemática en meses húmedos. Se descartó sesgo de retransformación logarítmica como
+causa (el modelo simula ruido real antes de transformar, no aplica smearing porque no
+lo necesita — y el sesgo no aparecía igual en entrenamiento que en validación, lo cual
+sería necesario si fuera un artefacto de la transformación). Se corrió luego
+validación cruzada temporal de 5 bloques (ventana expansiva: cada bloque entrena solo
+con el pasado, con margen de 30 días — ver limitación técnica más abajo). Resultado,
+ACEPTADO con tres salvedades declaradas:
+
+1. El error de validación está DOMINADO por el evento operativo de vertimiento de
+   Neusa (jul-nov 2022, ver 4f) cayendo en la ventana de validación de los bloques que
+   lo contienen: sesgo de Neusa aislado hasta 4.87 m³/s en el bloque afectado, vs.
+   ~1.08 m³/s del resto de series en el mismo bloque. Ese evento NO es predecible
+   desde precipitación/RONI porque no lo generó el clima — es una anomalía operativa
+   de un solo embalse, pendiente de verificación con la CAR (ver 4f), que podría
+   incluso implicar corrección de los propios datos de entrenamiento más adelante.
+2. Excluido ese confusor, queda una señal DÉBIL de dependencia entre distancia
+   climática (|ΔRONI| entre el bloque validado y su entrenamiento) y el error
+   (correlación 0.31, n=5 bloques — no concluyente). Se documenta como HIPÓTESIS a
+   revisar si el modelo se refina después (candidatos: interacción RONI×estacionalidad,
+   o coeficientes del VARX condicionados a la fase ENSO), NO como defecto establecido.
+3. El modelo subestima la correlación cruzada de Neusa con las demás series (0.15-0.20
+   simulado vs. 0.26-0.31 histórico). Lectura más probable: Neusa abastece acueductos
+   además de responder al clima (ver penalización diferenciada de Neusa en sección 4),
+   una componente de demanda que un modelo puramente climático no puede capturar por
+   diseño — no necesariamente un error del modelo, sino un límite de qué covariables
+   se le dieron.
+
+DEUDA TÉCNICA ENCONTRADA (a corregir cuando se itere el modelo, no ahora):
+`ModeloEstocasticoAfluencias.fit()` construye los rezagos autorregresivos del VARX
+por POSICIÓN de fila, no por fecha. Si se le pasan datos de entrenamiento con un
+hueco temporal real (p. ej. para dejar un bloque de validación en medio), el modelo
+trataría el último día antes del hueco y el primero después como si fueran
+calendario-consecutivos — un rezago espurio que contaminaría Phi. Por eso la
+validación de 5 bloques se hizo con ventana expansiva (un solo tramo contiguo por
+pliegue) en vez de "entrenar con todo lo demás" como se planteó originalmente.
+
+Scripts fuente: scratch_stochastic/validacion_bloques.py (validación de 5 bloques,
+incluye el análisis de aislar a Neusa). Ver src/pbcrl/stochastic/README.md para el
+detalle completo y cómo entrenar/usar el modelo.
 
 
 5. Datos: recibido / en espera / cerrado
