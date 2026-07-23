@@ -33,8 +33,8 @@ load_shield_results = data_loader_module.load_shield_results
 
 MESES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 SHIELD_ESCENARIOS = {
-    "historico": "Histórico (4.5 m³/s)",
-    "ampliado": "Ampliado (8.0 m³/s)",
+    "historico": "Histórico, 4.5 m³/s",
+    "ampliado": "Ampliado, 8.0 m³/s",
 }
 
 # --- Flags de presentación (ajuste visual, no de cálculo) ---
@@ -144,7 +144,7 @@ def _add_pumping_markers(fig: go.Figure, frame: pd.DataFrame) -> None:
             x=pumped.index,
             y=pumped["volumen_mm3"],
             mode="markers",
-            name="Días con bombeo (Tominé)",
+            name="Días con bombeo en Tominé",
             marker=dict(color=PUMPING_MARKER_COLOR, size=8, symbol="circle", line=dict(color="white", width=1)),
             customdata=(pumped["bombeo_mm3"] * 1e6),
             hovertemplate="Fecha: %{x|%Y-%m-%d}<br>Bombeo: %{customdata:,.0f} m³<extra></extra>",
@@ -177,7 +177,7 @@ def _build_volume_figure(contexts, start: pd.Timestamp, end: pd.Timestamp, show_
     fig.update_layout(
         title="Volumen historico por embalse",
         xaxis_title="Fecha",
-        yaxis_title="Volumen (Mm³)",
+        yaxis_title="Volumen [Mm³]",
         legend_title="Series",
         template="plotly_white",
         height=560,
@@ -209,7 +209,7 @@ def _build_inflow_figure(contexts, start: pd.Timestamp, end: pd.Timestamp) -> go
     fig.update_layout(
         title="Afluencia estimada por balance inverso",
         xaxis_title="Fecha",
-        yaxis_title="Afluencia (m³/s)",
+        yaxis_title="Afluencia [m³/s]",
         legend_title="Series",
         template="plotly_white",
         height=480,
@@ -248,9 +248,9 @@ def _build_efr_figure() -> go.Figure:
         )
 
     fig.update_layout(
-        title="Caudal ecológico VMF (EFR) por mes",
+        title="Caudal ecológico VMF por mes",
         xaxis_title="Mes",
-        yaxis_title="EFR (m³/s)",
+        yaxis_title="EFR [m³/s]",
         legend_title="Régimen",
         template="plotly_white",
         height=420,
@@ -304,7 +304,7 @@ def _build_violation_comparison_figure(df_con: pd.DataFrame, df_sin: pd.DataFram
     fig.update_layout(
         title="% de días con violación real por mes: con vs. sin shield",
         xaxis_title="Mes",
-        yaxis_title="Días con violación (%)",
+        yaxis_title="Días con violación [%]",
         barmode="group",
         template="plotly_white",
         height=420,
@@ -346,7 +346,7 @@ def _build_shield_correction_figure(df_escenario: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title="Magnitud media de corrección por embalse",
         xaxis_title="Embalse",
-        yaxis_title="Corrección media (m³/s)",
+        yaxis_title="Corrección media [m³/s]",
         template="plotly_white",
         height=420,
     )
@@ -361,8 +361,8 @@ def _diagnostics_note(contexts) -> str:
             parts.append(f"{name}: diagnostico no disponible en esta sesion.")
             continue
         parts.append(
-            f"{name}: Capa 1 corrigio {diag.volume_jump_days} saltos; Capa 2 acoto {diag.clamped_negative_days} dias negativos"
-            f" ({diag.clamped_negative_warning_days} por encima del umbral de advertencia)."
+            f"{name}: Capa 1 corrigio {diag.volume_jump_days} saltos; Capa 2 acoto {diag.clamped_negative_days} dias negativos, "
+            f"de los cuales {diag.clamped_negative_warning_days} superan el umbral de advertencia."
         )
     return " ".join(parts)
 
@@ -448,12 +448,12 @@ DIAGRAMA_MODELO_HTML = """
       🌡️ Temperatura*<br><span style="font-size:0.72em;">*pendiente de integrar</span>
     </div>
     <div style="border:2px solid #1f77b4; border-radius:10px; padding:14px 18px; text-align:center; background:rgba(31,119,180,0.12); font-weight:600; min-width:170px;">
-      🌊 RONI (El Niño / La Niña)
+      🌊 RONI: El Niño y La Niña
     </div>
   </div>
   <div style="font-size:2.2em; padding:0 6px;">→</div>
   <div style="border:3px solid #2ca02c; border-radius:14px; padding:30px 22px; text-align:center; background:rgba(44,160,44,0.14); font-weight:700; min-width:170px;">
-    Modelo único<br><span style="font-size:0.72em; font-weight:400;">(las 4 salidas correlacionadas entre sí)</span>
+    Modelo único<br><span style="font-size:0.72em; font-weight:400;">las 4 salidas están correlacionadas entre sí</span>
   </div>
   <div style="font-size:2.2em; padding:0 6px;">→</div>
   <div style="display:flex; flex-direction:column; gap:10px;">
@@ -486,7 +486,7 @@ def main() -> None:
 
     with st.sidebar.expander("Parámetros técnicos avanzados", expanded=False):
         volume_jump_fraction = st.number_input(
-            "Umbral de cambio volumetrico diario admisible (fraccion de la capacidad util)",
+            "Umbral de cambio volumetrico diario admisible, como fraccion de la capacidad util",
             min_value=0.01,
             max_value=0.50,
             value=float(DEFAULT_VOLUME_JUMP_FRACTION),
@@ -496,13 +496,13 @@ def main() -> None:
             "interpolacion. Se expresa como fraccion de la capacidad maxima del embalse.",
         )
         negative_warning_threshold_m3s = st.number_input(
-            "Umbral de alerta para residual de afluencia negativa (m³/s)",
+            "Umbral de alerta para residual de afluencia negativa [m³/s]",
             min_value=0.1,
             max_value=20.0,
             value=float(DEFAULT_NEGATIVE_WARNING_THRESHOLD_M3S),
             step=0.1,
             format="%.1f",
-            help="Capa 2: magnitud de afluencia negativa (residual del balance inverso) por encima "
+            help="Capa 2: magnitud de afluencia negativa, residual del balance inverso, por encima "
             "de la cual el dia se marca como alerta antes de acotarlo a cero.",
         )
 
@@ -568,17 +568,17 @@ def main() -> None:
             st.write("Volumen: Excel CAR 20261065095_Embalses.xlsx.")
             st.write("Evaporacion: Excel CAR ae (49).xlsx.")
             st.write("**Tominé**")
-            st.write("Volumen, cota, descarga, bombeo, lluvia: Excel Enlaza (datos operativos Tomine_Enlaza.xlsx).")
+            st.write("Volumen, cota, descarga, bombeo, lluvia: Excel Enlaza, archivo datos operativos Tomine_Enlaza.xlsx.")
             st.write(
-                "Evaporacion: ERA5-Land (flujo de calor latente). Enlaza confirmo por escrito "
-                "(radicado ENL-002443-2026-S) que Tominé no cuenta con medicion de evaporacion ni "
-                "evaporimetro; se valido en magnitud (~3.19 mm/dia) contra la evaporacion medida de "
+                "Evaporacion: ERA5-Land, flujo de calor latente. Enlaza confirmo por escrito, "
+                "radicado ENL-002443-2026-S, que Tominé no cuenta con medicion de evaporacion ni "
+                "evaporimetro; se valido en magnitud, ~3.19 mm/dia, contra la evaporacion medida de "
                 "Neusa y Sisga."
             )
             st.write("**Todos los embalses**")
             st.write(
-                "Afluencias: calculadas con pbcrl.hydrology.balance.calcular_afluencia "
-                "(para Tominé incluye el termino de bombeo)."
+                "Afluencias: calculadas con pbcrl.hydrology.balance.calcular_afluencia. "
+                "Para Tominé incluye el termino de bombeo."
             )
 
     if tab_diagnostic is not None:
@@ -602,8 +602,8 @@ def main() -> None:
                             "negativos acotados": None,
                             "advertencias acotadas": None,
                             "saltos de volumen corregidos": None,
-                            "umbral salto volumen (Mm3)": None,
-                            "umbral advertencia afluencia (m3/s)": negative_warning_threshold_m3s,
+                            "umbral salto volumen [Mm3]": None,
+                            "umbral advertencia afluencia [m3/s]": negative_warning_threshold_m3s,
                         }
                     )
                     continue
@@ -615,8 +615,8 @@ def main() -> None:
                         "negativos acotados": diag.clamped_negative_days,
                         "advertencias acotadas": diag.clamped_negative_warning_days,
                         "saltos de volumen corregidos": diag.volume_jump_days,
-                        "umbral salto volumen (Mm3)": diag.volume_jump_threshold_mm3,
-                        "umbral advertencia afluencia (m3/s)": negative_warning_threshold_m3s,
+                        "umbral salto volumen [Mm3]": diag.volume_jump_threshold_mm3,
+                        "umbral advertencia afluencia [m3/s]": negative_warning_threshold_m3s,
                     }
                 )
             st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
@@ -626,15 +626,15 @@ def main() -> None:
             )
 
     with tab_shield:
-        st.subheader("El límite planetario del agua dulce, operacionalizado (VMF)")
+        st.subheader("El límite planetario del agua dulce, operacionalizado con el VMF")
         st.write(
-            "El VMF es el Variable Monthly Flow, y es el método de Pastor et al. (2014), "
-            "usado a su vez por Gerten et al. (2013) para operacionalizar el límite planetario "
+            "El VMF es el Variable Monthly Flow, el método de Pastor et al., 2014, "
+            "usado a su vez por Gerten et al., 2013, para operacionalizar el límite planetario "
             "del agua dulce de Rockström a escala de cuenca. Lo empleo en vez de un "
             "caudal fijo o del caudal ambiental normativo, por que el normativo certifica "
             "cumplimiento regulatorio local pero no el respeto de un límite planetario, "
-            "que es lo que esta tesis busca operacionalizar." 
-            "  **EXPLICACIÓN**:El VMF preserva un "
+            "que es lo que esta tesis busca operacionalizar. "
+            "**Explicación:** el VMF preserva un "
             "porcentaje del caudal medio de CADA mes según su propio régimen: 60% en "
             "meses de caudal bajo, 45% en intermedios, 30% en altos, así el umbral "
             "se adapta a la estacionalidad real de la cuenca en vez de exigir lo "
@@ -642,17 +642,17 @@ def main() -> None:
         )
         st.plotly_chart(_build_efr_figure(), width="stretch")
         st.caption(
-            f"MAF (caudal medio anual) = {MAF_M3S:.2f} m³/s, calculado en **El Sol** "
-            "(el punto de control de toda la cuenca: Saucío + afluencia de Neusa + "
-            "Sisga + Tominé, menos la extracción de Tibitóc) — no es un cálculo de "
+            f"MAF, el caudal medio anual, = {MAF_M3S:.2f} m³/s, calculado en **El Sol**, "
+            "el punto de control de toda la cuenca: Saucío + afluencia de Neusa + "
+            "Sisga + Tominé, menos la extracción de Tibitóc. No es un cálculo de "
             "Saucío solo. Ventana 2012-2025."
         )
 
         st.divider()
         st.subheader("Shield de proyección cuadrática")
         st.caption(
-            "Resultados precalculados del rollout histórico completo (2012-01-02 a "
-            "2025-05-04, 4606 días) — no se recalcula el shield en esta pestaña."
+            "Resultados precalculados del rollout histórico completo: 2012-01-02 a "
+            "2025-05-04, 4606 días. No se recalcula el shield en esta pestaña."
         )
         try:
             shield_df = load_shield_results()
@@ -683,16 +683,16 @@ def main() -> None:
                 "Comparar contra un escenario SIN shield",
                 key="shield_comparar",
                 help="Misma acción propuesta y las mismas forzantes, corridas otra vez "
-                "con el shield desactivado — para ver qué tanto cambia el resultado.",
+                "con el shield desactivado, para ver qué tanto cambia el resultado.",
             )
 
             if mostrar_comparacion:
                 pct_viola_sin = 100 * df_sin_shield["violacion_real"].mean()
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Días donde el shield corrigió la acción", f"{pct_actua:.2f}%")
-                col2.metric("Violación real — CON shield", f"{pct_viola_con:.2f}%")
+                col2.metric("Violación real, CON shield", f"{pct_viola_con:.2f}%")
                 col3.metric(
-                    "Violación real — SIN shield",
+                    "Violación real, SIN shield",
                     f"{pct_viola_sin:.2f}%",
                     delta=f"{pct_viola_con - pct_viola_sin:+.2f} pts vs. sin shield",
                     delta_color="inverse",
@@ -704,7 +704,7 @@ def main() -> None:
             else:
                 col1, col2 = st.columns(2)
                 col1.metric("Días donde el shield corrigió la acción", f"{pct_actua:.2f}%")
-                col2.metric("Días con violación REAL (tras el recorte físico)", f"{pct_viola_con:.2f}%")
+                col2.metric("Días con violación REAL, tras el recorte físico", f"{pct_viola_con:.2f}%")
 
             left, right = st.columns(2)
             with left:
@@ -716,14 +716,14 @@ def main() -> None:
                 st.info(
                     "**Dos cosas distintas.** Que 'el shield corrigió la acción' es una "
                     "garantía matemática: la acción propuesta se proyecta para que, en "
-                    "teoría, el caudal en El Sol cumpla el umbral ecológico del mes — "
-                    "esto ocurre siempre que hace falta, sin excepción. Que 'el "
+                    "teoría, el caudal en El Sol cumpla el umbral ecológico del mes. "
+                    "Esto ocurre siempre que hace falta, sin excepción. Que 'el "
                     "resultado físico violó el caudal ecológico' es otra cosa: ocurre "
                     "solo cuando el agua para cumplir esa corrección no está "
-                    "físicamente disponible ese día en los embalses, y el recorte "
-                    "físico (que actúa después del shield, de forma independiente) "
+                    "físicamente disponible ese día en los embalses. El recorte "
+                    "físico actúa después del shield, de forma independiente, y "
                     "entrega menos de lo corregido. Ningún shield puede resolver eso "
-                    "por sí solo — no puede generar agua que no existe."
+                    "por sí solo, no puede generar agua que no existe."
                 )
 
     with tab_stochastic:
@@ -731,9 +731,9 @@ def main() -> None:
         st.write(
             "Un solo modelo que aprende del clima histórico y genera nuevos "
             "escenarios plausibles de caudal para los cuatro puntos de la cuenca "
-            "al mismo tiempo — manteniendo la relación natural entre ellos (si "
-            "llueve mucho, las cuatro series suben juntas; el modelo no las trata "
-            "por separado)."
+            "al mismo tiempo, manteniendo la relación natural entre ellos: si "
+            "llueve mucho, las cuatro series suben juntas, el modelo no las trata "
+            "por separado."
         )
         st.markdown(DIAGRAMA_MODELO_HTML, unsafe_allow_html=True)
 
@@ -749,7 +749,7 @@ def main() -> None:
         st.divider()
         st.success(
             "**Hallazgo:** la afluencia de Neusa muestra menor correlación con el "
-            "clima que Sisga y Tominé — consistente con que Neusa abastece "
+            "clima que Sisga y Tominé. Esto es consistente con que Neusa abastece "
             "acueductos además de responder a la lluvia, mientras los otros dos "
             "embalses son principalmente reguladores."
         )
