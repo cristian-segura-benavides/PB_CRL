@@ -68,18 +68,24 @@ from pbcrl.data_contracts.captaciones import ESCENARIO_HISTORICO, caudal_tibitoc
 from pbcrl.data_contracts.caudal_ecologico import q_eco_m3s
 from pbcrl.data_contracts.curvas import volumen_a_cota
 from pbcrl.data_contracts.embalses import EMBALSES
-from pbcrl.environment.config import ConfigEntorno
 
 NOMBRES_EMBALSES: tuple[str, ...] = ("Neusa", "Sisga", "Tomine")
 
 _M3S_A_MM3_DIA = 86_400.0 / 1e6  # 0.0864
 _MM_KM2_A_MM3 = 1e-3
 
-# Límite DURO del shield para la rata de descenso de Sisga — mismo valor numérico
-# que ConfigEntorno.sisga_descenso_umbral_cm (15.0), reutilizado aquí, pero con un
-# rol distinto: allá es donde EMPIEZA la penalización blanda; acá es un techo que
-# el shield nunca deja cruzar.
-TASA_MAX_DESCENSO_SISGA_CM: float = ConfigEntorno().sisga_descenso_umbral_cm
+# Límite DURO del shield para la rata de descenso de Sisga [cm/día].
+# NO se importa de environment.config.ConfigEntorno.sisga_descenso_umbral_cm a
+# propósito: shield/ está diseñado para ser aislado (ver README.md), y
+# environment.config solo es importable a través del paquete environment, cuyo
+# __init__.py importa entorno.py — que a su vez importa este módulo cuando el
+# shield está conectado. Importar ConfigEntorno aquí crea un ciclo real
+# (environment -> shield -> environment). Mismo valor numérico que
+# ConfigEntorno.sisga_descenso_umbral_cm (15.0, manual de operación CAR) pero
+# con un rol distinto: allá es donde EMPIEZA la penalización blanda; acá es un
+# techo que el shield nunca deja cruzar. Si ese valor cambia en config.py,
+# actualizar también aquí.
+TASA_MAX_DESCENSO_SISGA_CM: float = 15.0
 
 
 @dataclass

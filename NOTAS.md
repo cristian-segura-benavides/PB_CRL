@@ -87,11 +87,12 @@ pruebas pasan (core del modelo). El tablero es módulo aparte del core.
 3. Qué falta construir
 
 
-Shield de proyección cuadrática (contribución central): CONSTRUIDO v1 y VERIFICADO
-contra estados históricos (2026-07-22), aislado en src/pbcrl/shield/ (no conectado
-al entorno todavía). Tres restricciones lineales (cajas, rata de descenso de Sisga,
-caudal ecológico conjunto); proyección por bisección de KKT. Ver 4h.
-Agente de RL. PENDIENTE reunión.
+Shield de proyección cuadrática (contribución central): CONSTRUIDO v1 y CONECTADO
+al entorno (2026-07-22) vía ConfigEntorno.con_shield (opcional, default False).
+Verificado con un rollout completo sobre la ventana histórica en los dos escenarios
+de extracción — ver 4i. Tres restricciones lineales (cajas, rata de descenso de
+Sisga, caudal ecológico conjunto); proyección por bisección de KKT.
+Agente de RL. PENDIENTE reunión — es lo único que falta para tener el lazo completo.
 Modelo estocástico multivariado de afluencias: CONSTRUIDO v1 y ACEPTADO para el
 entregable (2026-07-22), aislado en src/pbcrl/stochastic/ (no conectado al entorno
 todavía). VARX desestacionalizado + hurdle, entrenado con precipitación y RONI
@@ -451,6 +452,84 @@ llegan al mismo número. Refuerza confianza en ambas implementaciones.
 
 Scripts fuente: scratch_shield/verificacion_historica.py. Ver
 src/pbcrl/shield/README.md para el detalle completo y cómo usar el módulo.
+
+
+4i. Shield CONECTADO al entorno — rollout histórico completo (2026-07-22)
+
+
+CONEXIÓN: environment/config.py gana ConfigEntorno.con_shield: bool = False (por
+defecto, no rompe nada existente). Con con_shield=True, EntornoEmbalses.step()
+proyecta la acción propuesta con shield.proyeccion.proyectar ANTES del recorte
+físico de hidraulica.recortar_suministro — orden: acción propuesta -> shield ->
+recorte físico -> balance. ResultadoPaso gana el campo diagnostico_shield (None si
+con_shield=False). No se tocó hidraulica.py ni balance.py.
+
+DOS BUGS DE PRECISIÓN NUMÉRICA ENCONTRADOS Y CORREGIDOS al conectar (ninguno es un
+error de diseño; ambos son de la clase "tolerancia en comparaciones de punto
+flotante", ya vista antes en el proyecto):
+
+1. Import circular: shield/restricciones.py importaba environment.config (para
+   reusar sisga_descenso_umbral_cm) — pero importar un submódulo de environment
+   fuerza a cargar environment/__init__.py, que importa entorno.py, que ahora
+   importa shield -> ciclo. Corregido quitando esa dependencia: el shield queda
+   genuinamente aislado (como estaba diseñado), con la constante (15.0 cm/día)
+   documentada localmente con referencia cruzada a config.py.
+2. Tolerancia insuficiente en dos lugares:
+   - La bisección del shield (proyeccion.py) aceptaba el criterio con un margen de
+     1e-9 EN CADA ITERACIÓN, dejando la acción proyectada hasta 1e-9 m³/s del lado
+     incorrecto de la restricción. Corregido: la bisección usa comparación
+     estricta internamente; `tol` solo se usa en los chequeos previos de
+     factibilidad (caja sola, extremo).
+   - La detección de violación en entorno.py (`q_sol < q_eco`) era estricta, sin
+     margen. Como el shield deja el sistema EXACTAMENTE en el borde cuando la
+     restricción está activa, recalcular Q_sol pasa por una secuencia de
+     operaciones de punto flotante distinta a la que usó el shield para fijar la
+     acción, y puede quedar ~1e-15 por debajo del umbral sin déficit real. Esto
+     causó que, en la primera corrida del rollout, 366 de 400 "violaciones"
+     reportadas en el escenario histórico fueran ruido numérico puro, no problemas
+     reales — se detectó ANTES de reportar el resultado y se corrigió con una
+     tolerancia de 1e-9 (`_TOL_VIOLACION_ECOLOGICA_M3S`).
+
+ROLLOUT HISTÓRICO COMPLETO (dinámica + shield en cada paso, volumen inicial =
+histórico del primer día, evolución propia del entorno después — no se re-inyecta
+el histórico; acción propuesta = descarga REAL observada día a día; 4606 días
+simulados, 2012-01-02/2025-05-04):
+
+    escenario Tibitóc   shield corrigió   violación REAL   volumen fuera de rango
+    histórico (4.5)     27.62% (1272 d)   34 días (0.74%)  0 días
+    ampliado  (8.0)     66.85% (3079 d)   1262 días (27.4%) 0 días
+
+Los % de corrección coinciden con los del cálculo aislado (4h) y con el % de
+violación del VMF (4f) — tercera confirmación cruzada independiente.
+
+VERIFICACIÓN DE LA GARANTÍA (tras limpiar el ruido numérico): de los déficits
+reales que quedan, el 100% coincide EXACTAMENTE con el recorte físico entregando
+menos de lo que el shield pidió (agua genuinamente no disponible ese día) — es el
+límite documentado desde el diseño del shield: garantiza la acción CORREGIDA, no
+el resultado físico final si el agua no existe. Bajo ampliado, además, el 22.4% de
+esos días también tenía la cota física de extracción de Tibitóc activada (el río
+mismo bajo en la bocatoma).
+
+LECTURA: bajo extracción histórica, el límite es marginal (0.74% de los días,
+déficit mediano ~ruido). Bajo extracción ampliada, un shield puramente reactivo
+(sin ningún agente con previsión) termina drenando los embalses lo suficiente en
+un rollout de 13 años como para no poder cumplir la garantía en más de una cuarta
+parte de los días (déficit mediano 1.95 m³/s, máximo 6.53 m³/s) — evidencia
+concreta de que hace falta el agente (o una versión del shield con la formulación
+de "mínima violación"/recuperación discutida conceptualmente antes de construirlo)
+para el caso de estrés hídrico real. Confirma, con datos, la preocupación que
+motivó esa formulación desde el principio.
+
+Magnitud típica de corrección (m³/s, solo días donde el shield actuó) —
+prácticamente idéntica entre los tres embalses, consistente con el reparto
+equitativo del Nivel 2 ya probado de forma aislada: histórico media≈0.675
+(mediana 0.512, p90 1.481, máx 2.608); ampliado media≈1.087 (mediana 0.976, p90
+2.217, máx 3.774).
+
+Scripts fuente: scratch_shield/simulacion_historica_con_shield.py. Pruebas de
+integración en tests/test_entorno.py::TestShieldEnElEntorno (regresión sin
+shield, garantía con agua disponible, barrido de los 12 meses, y el límite
+documentado sin agua disponible).
 
 
 5. Datos: recibido / en espera / cerrado

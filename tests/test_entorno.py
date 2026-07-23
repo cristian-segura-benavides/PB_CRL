@@ -8,6 +8,9 @@ Cobertura:
   (d) Detección de violación ecológica: caso con y sin violación.
   (e) Penalizaciones siempre en [0, peso].
   (f) Penalización Sisga en los puntos exactos: 15, 30 y 45 cm/día.
+  (h) Shield conectado (ConfigEntorno.con_shield): regresión sin shield,
+      garantía de Q_eco con agua disponible, y el límite documentado cuando
+      no la hay.
 """
 from __future__ import annotations
 
@@ -608,3 +611,120 @@ class TestExtraccionTibitoc:
             assert resultado.estado.caudal_sol_m3s >= -1e-9, (
                 f"Q_sol negativo con escenario={escenario}, q_natural={q_natural}"
             )
+
+
+# ---------------------------------------------------------------------------
+# (h) Shield conectado al entorno (ConfigEntorno.con_shield)
+# ---------------------------------------------------------------------------
+
+class TestShieldEnElEntorno:
+    def test_con_shield_false_no_ejecuta_el_shield(self):
+        """Por defecto (con_shield=False), diagnostico_shield es None y el
+        comportamiento es EXACTAMENTE el de antes de conectar el shield —
+        prueba de regresión reutilizando el escenario ya validado de
+        TestBalanceMasa.test_balance_neusa_exacto."""
+        env = EntornoEmbalses()  # con_shield=False por defecto
+        v_ini = 80.0
+        env.reset(volumenes_iniciales_mm3={"Neusa": v_ini, "Sisga": 50.0, "Tomine": 400.0})
+
+        q_neusa = 3.0
+        resultado = env.step(
+            acciones_m3s={"Neusa": q_neusa, "Sisga": 0.0, "Tomine": 0.0},
+            forzantes=_forzantes_neutros(),
+        )
+
+        assert resultado.diagnostico_shield is None
+        v_esperado = v_ini - q_neusa * _M3S_A_MM3_DIA
+        assert abs(resultado.estado.volumen_mm3["Neusa"] - v_esperado) < 1e-9
+
+    def test_con_shield_true_no_altera_accion_ya_factible(self):
+        """Con el shield activo, una acción que ya cumple todo no debe cambiar
+        (mismo criterio que el shield aislado, pero verificado end-to-end)."""
+        config = ConfigEntorno(con_shield=True)
+        env = EntornoEmbalses(config=config)
+        env.reset(volumenes_iniciales_mm3={"Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0})
+
+        accion = {"Neusa": 5.0, "Sisga": 3.0, "Tomine": 5.0}
+        resultado = env.step(
+            acciones_m3s=accion,
+            forzantes=_forzantes_neutros(q_natural=3.0),
+        )
+
+        assert resultado.diagnostico_shield is not None
+        assert not any(resultado.diagnostico_shield.violaciones_previas.values())
+        assert resultado.diagnostico_shield.accion_proyectada == pytest.approx(accion)
+
+    def test_con_shield_true_garantiza_q_eco_cuando_hay_agua_disponible(self):
+        """Caso central: el agente propone NO soltar nada (acción claramente
+        insuficiente); con volúmenes generosos (agua disponible), el shield
+        corrige la acción y Q_ElSol termina cumpliendo el umbral del mes."""
+        config = ConfigEntorno(con_shield=True)
+        env = EntornoEmbalses(config=config)
+        env.reset(volumenes_iniciales_mm3={"Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0})
+
+        forzantes = ForzantesExternos(
+            afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            caudal_natural_m3s=1.0,
+            mes=7,  # Q_eco = 7.51, el mas exigente del año
+            caudal_tibitoc_m3s=CAUDAL_TIBITOC_HISTORICO_M3S,
+        )
+        resultado = env.step(_acciones_cero(), forzantes)  # el agente no propone soltar nada
+
+        assert resultado.diagnostico_shield is not None
+        assert resultado.diagnostico_shield.violaciones_previas["caudal_ecologico_conjunto"] is True
+        assert resultado.violacion_ecologica is False
+        assert resultado.estado.caudal_sol_m3s >= resultado.q_eco_aplicado_m3s - 1e-6
+
+    def test_con_shield_true_barrido_de_meses_nunca_viola(self):
+        """Barrido de los 12 meses: con agua disponible, el shield nunca deja
+        pasar un Q_ElSol por debajo del umbral del mes correspondiente."""
+        for mes in range(1, 13):
+            config = ConfigEntorno(con_shield=True)
+            env = EntornoEmbalses(config=config)
+            env.reset(volumenes_iniciales_mm3={"Neusa": 80.0, "Sisga": 50.0, "Tomine": 400.0})
+            forzantes = ForzantesExternos(
+                afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+                precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+                evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+                caudal_natural_m3s=1.0,
+                mes=mes,
+                caudal_tibitoc_m3s=CAUDAL_TIBITOC_HISTORICO_M3S,
+            )
+            resultado = env.step(_acciones_cero(), forzantes)
+            assert resultado.estado.caudal_sol_m3s >= resultado.q_eco_aplicado_m3s - 1e-6, (
+                f"mes={mes}: Q_ElSol={resultado.estado.caudal_sol_m3s} < "
+                f"Q_eco={resultado.q_eco_aplicado_m3s}"
+            )
+
+    def test_recorte_fisico_puede_deshacer_la_garantia_sin_agua_disponible(self):
+        """Límite DOCUMENTADO del diseño, no un bug: el shield garantiza la
+        acción CORREGIDA, no el resultado físico final. Si los embalses están
+        en el volumen mínimo (sin agua para soltar), el recorte físico
+        (posterior al shield, por diseño) fuerza suministro_real=0 sin
+        importar lo que el shield haya corregido -- la garantía del shield es
+        condicional a que el agua exista, no absoluta."""
+        config = ConfigEntorno(con_shield=True)
+        env = EntornoEmbalses(config=config)
+        env.reset(volumenes_iniciales_mm3={
+            "Neusa": EMBALSES["Neusa"].capacidad_min_mm3,
+            "Sisga": EMBALSES["Sisga"].capacidad_min_mm3,
+            "Tomine": EMBALSES["Tomine"].capacidad_min_mm3,
+        })
+        forzantes = ForzantesExternos(
+            afluencia_m3s={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            precipitacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            evaporacion_mm={"Neusa": 0.0, "Sisga": 0.0, "Tomine": 0.0},
+            caudal_natural_m3s=1.0,  # < Q_eco de cualquier mes
+            mes=7,
+            caudal_tibitoc_m3s=CAUDAL_TIBITOC_HISTORICO_M3S,
+        )
+        resultado = env.step(_acciones_cero(), forzantes)
+
+        # El shield "corrigió" la acción, pero no había agua para cumplirla.
+        diag = resultado.diagnostico_shield
+        assert diag is not None
+        assert diag.accion_proyectada["Neusa"] > 0.0  # el shield SÍ pidió soltar agua
+        assert all(v == 0.0 for v in resultado.suministro_real_m3s.values())  # pero no había
+        assert resultado.violacion_ecologica is True  # la garantía no se sostiene sin agua

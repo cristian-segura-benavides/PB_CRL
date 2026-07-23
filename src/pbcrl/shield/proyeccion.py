@@ -136,10 +136,20 @@ def _proyectar_caja_mas_semiespacio(
         # Ni el extremo más favorable alcanza: conjunto factible VACÍO.
         return a_extremo, float("inf"), True, False
 
+    # IMPORTANTE: la bisección en sí NO usa `tol` en su criterio de rama —
+    # solo los chequeos de arriba (caja sola, extremo) lo usan, para decidir
+    # si ya es "suficientemente factible" sin bisectar. Si `tol` entrara aquí
+    # (p. ej. `> d + tol`), la bisección convergería a un punto que deja la
+    # restricción sin cumplir por hasta `tol` (bug real encontrado al conectar
+    # el shield al entorno: con tol=1e-9 en el criterio, Q_ElSol podía quedar
+    # 1e-9 m³/s por debajo de Q_eco, y la comparación estricta `<` del entorno
+    # lo marcaba como violación). Con criterio estricto, las 100 iteraciones
+    # (rango inicial 1e6) convergen al punto de precisión de punto flotante
+    # (~1e-15), no a `tol`.
     lam_lo, lam_hi = 0.0, _LAMBDA_MAX
     for _ in range(_MAX_ITER_BISECCION):
         lam_mid = (lam_lo + lam_hi) / 2.0
-        if c @ a_de_lambda(lam_mid) > d + tol:
+        if c @ a_de_lambda(lam_mid) > d:
             lam_lo = lam_mid
         else:
             lam_hi = lam_mid

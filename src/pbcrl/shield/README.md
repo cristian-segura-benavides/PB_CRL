@@ -1,9 +1,11 @@
 # Shield de proyección cuadrática
 
-**La contribución central de PB-CRL.** Módulo aislado: no importa ni modifica
-`environment.entorno`, `environment.hidraulica` ni `hydrology.balance`.
-Conectarlo al entorno de simulación es un paso posterior, una vez validado —
-este módulo se desarrolla y se prueba de forma completamente independiente.
+**La contribución central de PB-CRL.** El módulo en sí (`restricciones.py`,
+`proyeccion.py`) sigue aislado: no importa `environment.entorno` ni
+`environment.hidraulica` ni `hydrology.balance` (ver más abajo el import
+circular que esto evita). Lo que SÍ está conectado, opcionalmente, es
+`environment.entorno`, que puede llamar a este módulo — ver "Conexión al
+entorno" abajo. No se tocó `hidraulica.py` ni `balance.py`.
 
 ## Qué hace
 
@@ -92,3 +94,65 @@ corregido (27.61% / 66.83%) coincide, de forma independiente, con el % de
 días en violación del VMF calculado en la sesión del umbral (27.13% / 66.75%,
 ver `data_contracts/caudal_ecologico.py` y NOTAS.md 4f) — dos piezas del
 proyecto construidas por separado llegan al mismo número.
+
+## Conexión al entorno (`ConfigEntorno.con_shield`)
+
+`environment.config.ConfigEntorno` gana `con_shield: bool = False` (por
+defecto no cambia nada). Con `con_shield=True`,
+`environment.entorno.EntornoEmbalses.step()` proyecta la acción propuesta
+con `proyectar()` **antes** del recorte físico de
+`hidraulica.recortar_suministro` — orden: acción propuesta → shield →
+recorte físico → balance. `ResultadoPaso` gana el campo `diagnostico_shield`
+(`None` si `con_shield=False`).
+
+**Import circular evitado a propósito:** `restricciones.py` NO importa
+`environment.config` (aunque comparte el mismo valor numérico que
+`ConfigEntorno.sisga_descenso_umbral_cm`, documentado localmente con
+referencia cruzada) — importar un submódulo de `environment` fuerza a cargar
+`environment/__init__.py`, que importa `entorno.py`, que ahora importa
+`shield`. Es el motivo concreto por el que el shield se mantiene sin ninguna
+dependencia de `environment`.
+
+**Dos bugs de precisión numérica encontrados y corregidos al conectar** (ver
+NOTAS.md 4i para el detalle): la bisección de `proyeccion.py` dejaba una
+holgura de `1e-9` en cada iteración (corregido: comparación estricta dentro
+de la bisección, `tol` solo en los chequeos previos); y la detección de
+violación en `entorno.py` (`q_sol < q_eco`) era estricta sin margen, lo que
+en la primera corrida marcó como "violación" 366 de 400 casos que en
+realidad eran ruido de punto flotante (~1e-15) del sistema quedando
+exactamente en el borde de la restricción — corregido con una tolerancia de
+`1e-9` (`_TOL_VIOLACION_ECOLOGICA_M3S`).
+
+## Rollout histórico completo (dinámica + shield en cada paso)
+
+`scratch_shield/simulacion_historica_con_shield.py` corre la simulación
+CONTINUA (no snapshots independientes como la verificación de arriba):
+volumen inicial = histórico del primer día, después evoluciona por la
+dinámica propia del entorno; acción propuesta = descarga real observada
+día a día; 4606 días, 2012-01-02 → 2025-05-04.
+
+| | Histórico (4.5 m³/s) | Ampliado (8.0 m³/s) |
+|---|---|---|
+| Shield corrigió | 27.62% (1272 días) | 66.85% (3079 días) |
+| Violación REAL de Q_eco (tras limpiar ruido numérico) | 34 días (0.74%) | 1262 días (27.4%) |
+| Volumen fuera de rango | 0 días | 0 días |
+
+**La garantía no se sostiene el 100% del tiempo — verificado por qué, no
+dejado como caja negra:** el 100% de los déficits reales restantes coincide
+exactamente con el recorte físico entregando menos de lo que el shield
+pidió (agua genuinamente no disponible ese día) — el límite documentado
+desde el diseño: el shield garantiza la acción *corregida*, no el resultado
+físico final si el agua no existe. Bajo ampliado, el 22.4% de esos días
+también tenía la cota física de extracción de Tibitóc activada.
+
+**Lectura:** bajo extracción histórica el límite es marginal. Bajo
+extracción ampliada, un shield puramente reactivo (sin ningún agente con
+previsión) termina drenando los embalses lo suficiente en 13 años como para
+no poder cumplir la garantía en más de una cuarta parte de los días
+(déficit mediano 1.95 m³/s, máximo 6.53 m³/s) — evidencia concreta de que
+hace falta el agente, o una versión del shield con la formulación de
+"mínima violación"/recuperación, para el caso de estrés hídrico real.
+
+Pruebas de integración: `tests/test_entorno.py::TestShieldEnElEntorno`
+(regresión sin shield, garantía con agua disponible, barrido de los 12
+meses, y el límite documentado sin agua disponible).

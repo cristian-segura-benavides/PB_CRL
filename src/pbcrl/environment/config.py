@@ -46,10 +46,20 @@ class ConfigEntorno:
 
     peso_tomine : float
         Peso de la penalización del Tominé. PROVISIONAL.
+
+    con_shield : bool
+        Si True, `EntornoEmbalses.step()` proyecta la acción propuesta con
+        `shield.proyeccion.proyectar` ANTES del recorte físico de
+        disponibilidad — ver el flujo documentado en el encabezado de
+        `entorno.py`. Por defecto False: mantiene el comportamiento anterior
+        (sin shield) para no romper nada de lo ya construido y probado.
     """
 
     # --- Caudal ecológico ---
     calcular_q_eco_m3s: Callable[[int], float] = _calcular_q_eco_vmf
+
+    # --- Shield de proyección (opcional) ---
+    con_shield: bool = False
 
     # --- Penalización Sisga: rata de descenso de nivel ---
     # Fuente umbrales: Manual de Operación Embalse del Sisga, CAR.

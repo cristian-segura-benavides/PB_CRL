@@ -4,7 +4,16 @@ Entorno de simulación para la operación coordinada de los tres embalses.
 Flujo de un paso de simulación
 -------------------------------
 1. El agente proporciona los caudales suministrados por cada embalse (acciones).
-2. El entorno recorta las acciones a lo físicamente posible (recortar_suministro).
+1b. (Opcional, ConfigEntorno.con_shield=True) La acción propuesta pasa PRIMERO
+    por el shield de proyección cuadrática (shield.proyeccion.proyectar), que
+    la corrige a la más cercana que respeta las restricciones del sistema
+    (cajas, rata de descenso de Sisga, caudal ecológico conjunto) — ver
+    shield/README.md. Esto ocurre ANTES del recorte físico del paso 2: son dos
+    mecanismos distintos, el shield corrige la INTENCIÓN, el recorte físico
+    verifica DESPUÉS si esa acción ya corregida es alcanzable con el agua
+    realmente disponible ese día en cada embalse.
+2. El entorno recorta las acciones (ya corregidas por el shield si aplica) a
+   lo físicamente posible (recortar_suministro).
 3. El entorno aplica el balance hídrico hacia adelante en cada embalse (paso_embalse).
 4. Se calcula el caudal en la bocatoma de Tibitóc y el caudal en El Sol, según la
    topología confirmada (ver data_contracts.captaciones):
@@ -21,9 +30,6 @@ Flujo de un paso de simulación
    y las salvedades documentadas).
 6. Se calculan las penalizaciones por embalse.
 7. Se devuelve el nuevo estado, las penalizaciones, y un dict de información adicional.
-
-NOTA: El mecanismo que *fuerza* el cumplimiento del caudal ecológico (shield de
-proyección) NO está implementado aquí; se añadirá en el próximo módulo.
 """
 from __future__ import annotations
 
@@ -42,9 +48,22 @@ from pbcrl.environment.penalizaciones import (
     pen_descenso_nivel_sisga,
     pen_proximidad_minimo,
 )
+from pbcrl.shield.proyeccion import DiagnosticoShield, proyectar
+from pbcrl.shield.restricciones import EstadoShield
 
 # Orden canónico de los embalses (debe mantenerse consistente en todo el código)
 _NOMBRES_EMBALSES: tuple[str, ...] = ("Neusa", "Sisga", "Tomine")
+
+# Tolerancia numérica para la detección de violación del caudal ecológico. El
+# shield (cuando está conectado) puede dejar Q_sol EXACTAMENTE en el borde de
+# Q_eco (esa es la naturaleza de una restricción activa en una proyección);
+# recalcular Q_sol desde Q_bocatoma-Q_extracción pasa por una secuencia de
+# operaciones de punto flotante distinta a la que usó el shield para fijar la
+# acción, así que puede quedar ~1e-15 por debajo del umbral sin que exista
+# ningún déficit físico real. Una comparación estricta (`<` sin tolerancia)
+# marcaría eso como violación por ruido de redondeo, no por un problema real
+# — encontrado al conectar el shield al entorno (ver NOTAS.md).
+_TOL_VIOLACION_ECOLOGICA_M3S = 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +178,11 @@ class ResultadoPaso:
         muerto) [Mm³]. Cero en condiciones normales. NO es una entrada física real;
         es la magnitud del ajuste. Acumulable a lo largo de una corrida para medir
         cuánta masa fue "perdonada" por el clamp (ver hidraulica.paso_embalse).
+    diagnostico_shield : DiagnosticoShield | None
+        Diagnóstico del shield en este paso (acción propuesta vs. proyectada,
+        qué restricciones estaban violadas/activas, si el conjunto factible
+        era vacío) — ver shield.proyeccion.DiagnosticoShield. None si
+        ConfigEntorno.con_shield es False (el shield no se ejecutó este paso).
     """
 
     estado: EstadoSistema
@@ -171,6 +195,7 @@ class ResultadoPaso:
     cota_fisica_activada: bool
     deficit_extraccion_m3s: float
     deficit_volumen_mm3: dict[str, float]
+    diagnostico_shield: "DiagnosticoShield | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +319,23 @@ class EntornoEmbalses:
         if self._estado is None:
             raise RuntimeError("Llama reset() antes de step().")
 
+        # --- Shield de proyección (opcional) — corrige la INTENCIÓN antes del
+        # recorte físico. Ver el flujo documentado en el encabezado del módulo.
+        diagnostico_shield: DiagnosticoShield | None = None
+        acciones_efectivas = acciones_m3s
+        if self.config.con_shield:
+            estado_shield = EstadoShield(
+                volumen_mm3=dict(self._estado.volumen_mm3),
+                afluencia_m3s=dict(forzantes.afluencia_m3s),
+                precipitacion_mm=dict(forzantes.precipitacion_mm),
+                evaporacion_mm=dict(forzantes.evaporacion_mm),
+                caudal_saucio_m3s=forzantes.caudal_natural_m3s,
+                mes=forzantes.mes,
+                caudal_tibitoc_nominal_m3s=forzantes.caudal_tibitoc_m3s,
+            )
+            diagnostico_shield = proyectar(estado_shield, acciones_m3s)
+            acciones_efectivas = diagnostico_shield.accion_proyectada
+
         nuevos_volumenes: dict[str, float] = {}
         suministro_real: dict[str, float] = {}
         vertimiento_mm3: dict[str, float] = {}
@@ -303,9 +345,10 @@ class EntornoEmbalses:
         for nombre, params in self.embalses.items():
             vol_actual = self._estado.volumen_mm3[nombre]
 
-            # 1. Recortar la acción a lo físicamente posible
+            # 1. Recortar la acción (ya corregida por el shield si aplica) a
+            # lo físicamente posible
             q_real = recortar_suministro(
-                suministro_pedido_m3s=acciones_m3s.get(nombre, 0.0),
+                suministro_pedido_m3s=acciones_efectivas.get(nombre, 0.0),
                 volumen_actual_mm3=vol_actual,
                 params=params,
             )
@@ -354,7 +397,7 @@ class EntornoEmbalses:
         # --- Detección de violación del caudal ecológico ---
         # Umbral dependiente del mes (por defecto, VMF — ver data_contracts.caudal_ecologico).
         q_eco = self.config.calcular_q_eco_m3s(forzantes.mes)
-        violacion = q_sol < q_eco
+        violacion = q_sol < q_eco - _TOL_VIOLACION_ECOLOGICA_M3S
 
         # --- Penalizaciones ---
         penalizaciones: dict[str, float] = {}
@@ -406,4 +449,5 @@ class EntornoEmbalses:
             cota_fisica_activada=cota_activada,
             deficit_extraccion_m3s=deficit_extraccion,
             deficit_volumen_mm3=deficit_volumen_mm3,
+            diagnostico_shield=diagnostico_shield,
         )
