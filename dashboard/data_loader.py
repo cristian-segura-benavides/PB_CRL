@@ -604,3 +604,34 @@ def operational_limits_table() -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Resultados precalculados del shield (pestaña "Shield de Proteccion")
+# ---------------------------------------------------------------------------
+
+SHIELD_RESULTS_CSV = ROOT_DIR / "scratch_shield" / "resultados_shield_dashboard.csv"
+
+
+@lru_cache(maxsize=1)
+def load_shield_results() -> pd.DataFrame:
+    """Carga el detalle dia a dia del shield (ambos escenarios de Tibitoc).
+
+    Precalculado por scratch_shield/generar_resultados_dashboard.py — corre
+    el rollout historico completo UNA vez (no se recalcula en el dashboard).
+    Columnas: fecha, escenario ("historico"/"ampliado"), mes, shield_actuo,
+    violacion_real, correccion_{neusa,sisga,tomine}_m3s.
+
+    Raises
+    ------
+    FileNotFoundError
+        Si el CSV no existe todavia — hay que correr
+        scratch_shield/generar_resultados_dashboard.py primero.
+    """
+    if not SHIELD_RESULTS_CSV.exists():
+        raise FileNotFoundError(
+            f"No se encontro {SHIELD_RESULTS_CSV}. Corre "
+            "scratch_shield/generar_resultados_dashboard.py primero para generarlo."
+        )
+    datos = pd.read_csv(SHIELD_RESULTS_CSV, parse_dates=["fecha"])
+    return datos

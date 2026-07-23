@@ -46,6 +46,40 @@ ALTO se modela por separado, vía el VARX, sobre `log1p(valor - umbral)`
 desestacionalizado (media mensual restada, calculada solo con días en estado
 alto, para no contaminar la estacionalidad con el artefacto).
 
+COMPONENTE ESTACIONAL EN EL VARX (agregado 2026-07-22, tras diagnóstico)
+----------------------------------------------------------------------------
+La validación de 5 bloques mostró que el episodio estocástico sobreestimaba
+Neusa un ~52% frente al histórico en el mismo período (2015-2017). Un
+diagnóstico dedicado (`scratch_stochastic/diagnostico_residuo_neusa.py`)
+encontró que Neusa NO tiene una varianza residual excepcionalmente alta (de
+hecho Tominé está peor explicado por el clima), pero SÍ un patrón estacional
+real y modesto (~5-6%) en enero, julio, agosto y octubre — visible solo tras
+excluir el evento de vertimiento de 2022 (que lo enmascaraba). El patrón es
+consistente año a año (no ruido) pero irregular en forma: positivo en enero,
+negativo en jul/ago/oct, sin relación con las otras dos series objetivo entre
+sí.
+
+Por eso el VARX ahora incluye 11 variables dummy de mes (febrero a diciembre;
+enero es la referencia, capturada por el intercepto) como covariable exógena
+ADICIONAL, aplicada a las CUATRO series por igual (para mantener el modelo
+conjunto coherente, no solo a Neusa). Se usaron dummies y no una función
+armónica (seno/coseno) porque el patrón diagnosticado NO es una curva suave
+de un solo pico estacional — es irregular (enero positivo, luego silencio,
+luego jul/ago/oct negativo, luego silencio de nuevo) — una armónica de baja
+frecuencia no la ajustaría bien, y con >4000 días para 4 ecuaciones, 11
+parámetros adicionales no genera riesgo de sobreajuste. Es, además, el MISMO
+patrón de diseño (`_dummies_mes`) que ya usaba el componente hurdle — no se
+introdujo un mecanismo nuevo.
+
+Nota importante: esto es DISTINTO de la desestacionalización ya existente
+(`_media_g`, la media mensual de `log1p(valor-umbral)` restada antes de
+armar la anomalía). Esa desestacionalización ya deja la anomalía con media
+~cero por mes; lo que el diagnóstico encontró es que el propio VARX (rezagos
++ precipitación + RONI) introducía un sesgo sistemático por mes en lo que
+predice a partir de esa anomalía ya desestacionalizada — por eso el mes entra
+de nuevo, esta vez como regresor de la propia regresión VARX, no como resta
+previa.
+
 SIMPLIFICACIONES DOCUMENTADAS (para iterar después de la validación, no para
 ocultar):
   - La ocurrencia de estado bajo se sortea de forma INDEPENDIENTE entre las 4
@@ -186,6 +220,7 @@ class ModeloEstocasticoAfluencias:
         self._intercepto_varx: np.ndarray | None = None  # (4,)
         self._phi: np.ndarray | None = None               # (4,4): coeficientes autorregresivos
         self._b_exog: np.ndarray | None = None            # (4, n_cov): coeficientes de covariables
+        self._b_mes: np.ndarray | None = None             # (4, 11): coeficientes de dummies de mes
         self._sigma: np.ndarray | None = None             # (4,4): covarianza residual
         self._chol_sigma: np.ndarray | None = None        # (4,4): factor de Cholesky de _sigma
 
@@ -264,15 +299,22 @@ class ModeloEstocasticoAfluencias:
             media_por_dia = self._media_g[serie][meses - 1]
             anomalia[:, j] = g_alto[serie] - media_por_dia
 
-        self._ajustar_varx(anomalia, cov_arr)
+        self._ajustar_varx(anomalia, cov_arr, meses)
         self._ajustado = True
         return self
 
-    def _ajustar_varx(self, anomalia: np.ndarray, cov_arr: np.ndarray) -> None:
-        """Ajusta el componente VARX(p) sobre las anomalías (numpy puro, OLS)."""
+    def _ajustar_varx(self, anomalia: np.ndarray, cov_arr: np.ndarray, meses: np.ndarray) -> None:
+        """Ajusta el componente VARX(p) sobre las anomalías (numpy puro, OLS).
+
+        Incluye dummies de mes como covariable exógena adicional (ver docstring
+        del módulo, sección "COMPONENTE ESTACIONAL EN EL VARX") — no solo
+        precipitación/RONI.
+        """
         p = self.config.orden_varx
         n, k = anomalia.shape
         n_cov = cov_arr.shape[1]
+        dummies_mes_arr = _dummies_mes(meses)
+        n_dummies = dummies_mes_arr.shape[1]
 
         # Fila t valida como TARGET solo si las 4 series estan en estado alto en t.
         fila_completa = ~np.isnan(anomalia).any(axis=1)
@@ -294,7 +336,7 @@ class ModeloEstocasticoAfluencias:
                     # para esa(s) serie(s) (ver docstring del módulo).
                     fila_lag = np.nan_to_num(fila_lag, nan=0.0)
                 rezagos.append(fila_lag)
-            z = np.concatenate([[1.0], *rezagos, cov_arr[t]])
+            z = np.concatenate([[1.0], *rezagos, cov_arr[t], dummies_mes_arr[t]])
             filas_z.append(z)
             filas_y.append(anomalia[t])
 
@@ -308,14 +350,17 @@ class ModeloEstocasticoAfluencias:
         Y = np.vstack(filas_y)
 
         coef, _, _, _ = np.linalg.lstsq(Z, Y, rcond=None)
-        # coef: (1 + p*k + n_cov, k). Filas: intercepto, rezagos (p bloques de k,
-        # del más antiguo al más reciente), covariables.
+        # coef: (1 + p*k + n_cov + n_dummies, k). Filas: intercepto, rezagos
+        # (p bloques de k, del más antiguo al más reciente), covariables,
+        # dummies de mes.
         self._intercepto_varx = coef[0, :]
         # _phi queda en forma (k, p*k) — la misma forma en la que se usa
         # directamente en sample() contra `rezagos` (también (p*k,)), sin
         # reshapes intermedios.
         self._phi = coef[1 : 1 + p * k, :].T if p > 0 else np.zeros((k, 0))
-        self._b_exog = coef[1 + p * k :, :].T
+        self._b_exog = coef[1 + p * k : 1 + p * k + n_cov, :].T
+        self._b_mes = coef[1 + p * k + n_cov :, :].T
+        assert self._b_mes.shape == (k, n_dummies)
 
         residuos = Y - Z @ coef
         self._sigma = np.cov(residuos, rowvar=False, ddof=1) + 1e-9 * np.eye(k)
@@ -370,6 +415,7 @@ class ModeloEstocasticoAfluencias:
         cov_arr = covariables[cov_cols].to_numpy(dtype=float)
         meses = covariables.index.month.to_numpy()
         n = len(covariables)
+        dummies_mes_arr = _dummies_mes(meses)
 
         rng = np.random.default_rng(semilla)
 
@@ -393,7 +439,7 @@ class ModeloEstocasticoAfluencias:
 
             media_condicional = self._intercepto_varx + (
                 self._phi @ rezagos if p > 0 else 0.0
-            ) + self._b_exog @ cov_arr[t]
+            ) + self._b_exog @ cov_arr[t] + self._b_mes @ dummies_mes_arr[t]
             ruido = self._chol_sigma @ rng.standard_normal(k)
             a_t = media_condicional + ruido
 
@@ -436,6 +482,7 @@ class ModeloEstocasticoAfluencias:
             "intercepto_varx": self._intercepto_varx,
             "phi": self._phi,
             "b_exog": self._b_exog,
+            "b_mes": self._b_mes,
             "sigma": self._sigma,
             "chol_sigma": self._chol_sigma,
         }
@@ -459,6 +506,7 @@ class ModeloEstocasticoAfluencias:
             modelo._intercepto_varx = datos["intercepto_varx"]
             modelo._phi = datos["phi"]
             modelo._b_exog = datos["b_exog"]
+            modelo._b_mes = datos["b_mes"]
             modelo._sigma = datos["sigma"]
             modelo._chol_sigma = datos["chol_sigma"]
             for serie in config.series_objetivo:
